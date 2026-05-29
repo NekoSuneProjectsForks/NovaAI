@@ -352,7 +352,17 @@ tailwind.config = {
             <div class="text-[13px] font-bold">Game Agent (<span id="game-driver">minecraft</span>)</div>
             <span id="game-badge" class="text-[11px] font-semibold text-nova-muted">Stopped</span>
           </div>
-          <div class="text-[12px] text-nova-muted mb-3">NovaAI plays autonomously and narrates its thoughts in chat (and on stream/voice). Minecraft needs Node.js + a running server; run <span class="text-nova-text">npm install</span> in node/minecraft-bridge first.</div>
+          <div class="text-[12px] text-nova-muted mb-3">NovaAI plays autonomously and narrates its thoughts in chat (and on stream/voice). Each game has its own requirements — see .env for setup.</div>
+          <div class="flex gap-2 mb-2">
+            <select id="game-driver-select" class="flex-1">
+              <option value="minecraft">Minecraft (Mineflayer + Node)</option>
+              <option value="universal">Universal (vision + keyboard) — Terraria, Unturned, Celeste, etc.</option>
+              <option value="vrchat">VRChat (official OSC)</option>
+              <option value="factorio">Factorio (RCON)</option>
+              <option value="osu">osu! (offline/solo only — ban risk!)</option>
+            </select>
+          </div>
+          <div id="game-driver-note" class="text-[11px] text-amber-400 mb-2 hidden"></div>
           <div class="flex gap-2 mb-2">
             <input id="game-goal" type="text" placeholder="Goal (e.g. collect wood, build a shelter)..." class="flex-1" />
             <button onclick="doSetGameGoal()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Set Goal</button>
@@ -952,10 +962,31 @@ window.__onGameUpdate = function(state) {
     <div>Nearby: <span class="text-nova-text">${escHtml((state.nearbyBlocks||[]).slice(0,8).join(', ') || 'none')}</span></div>`;
 };
 
+const GAME_DRIVER_NOTES = {
+  minecraft: 'Needs Node.js + a Minecraft server. Run "npm install" in node/minecraft-bridge first.',
+  universal: 'Captures your screen and presses keys/mouse. Set VISION_MODEL in .env and install pydirectinput, mss, pillow. Best-effort; not for precision games.',
+  vrchat: 'Enable OSC in VRChat’s Action Menu. Install python-osc. Movement/emote only (TOS-friendly).',
+  factorio: 'Start the Factorio server with --rcon-port / --rcon-password and set FACTORIO_RCON_* in .env.',
+  osu: 'OFFLINE/SOLO ONLY — automating osu! on official servers is bannable. Use at your own risk.',
+};
+
+function _updateGameDriverNote() {
+  const sel = $('game-driver-select');
+  const note = $('game-driver-note');
+  if (!sel || !note) return;
+  const txt = GAME_DRIVER_NOTES[sel.value] || '';
+  note.textContent = txt;
+  note.classList.toggle('hidden', !txt);
+}
+
 async function loadGame() {
   try {
     const s = await api().get_game_status();
     $('game-driver').textContent = s.driver || 'minecraft';
+    const sel = $('game-driver-select');
+    if (sel && !s.running) sel.value = s.driver || 'minecraft';
+    sel.onchange = _updateGameDriverNote;
+    _updateGameDriverNote();
     const badge = $('game-badge');
     badge.textContent = s.running ? 'Running' : 'Stopped';
     badge.className = 'text-[11px] font-semibold ' + (s.running ? 'text-emerald-400' : 'text-nova-muted');
@@ -964,7 +995,8 @@ async function loadGame() {
 }
 
 async function doStartGame() {
-  try { const r = await api().start_game($('game-goal').value || ''); if (r && !r.ok && r.msg) showNotification(r.msg); loadGame(); } catch(e) { console.error(e); }
+  const driver = $('game-driver-select') ? $('game-driver-select').value : '';
+  try { const r = await api().start_game($('game-goal').value || '', driver); if (r && !r.ok && r.msg) showNotification(r.msg); loadGame(); } catch(e) { console.error(e); }
 }
 async function doStopGame() { try { await api().stop_game(); loadGame(); } catch(e) { console.error(e); } }
 async function doSetGameGoal() {

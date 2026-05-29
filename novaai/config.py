@@ -292,6 +292,14 @@ class Config:
     rvc_model_path: str | None
     singing_api_url: str | None
     singing_api_key: str | None
+    # Vision (for the universal game driver) + extra game drivers
+    vision_model: str | None
+    osu_allow_online: bool
+    factorio_rcon_host: str
+    factorio_rcon_port: int
+    factorio_rcon_password: str | None
+    vrchat_osc_host: str
+    vrchat_osc_port: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -575,4 +583,11 @@ class Config:
             rvc_model_path=parse_optional_str_env("RVC_MODEL_PATH"),
             singing_api_url=parse_optional_str_env("SINGING_API_URL"),
             singing_api_key=parse_optional_str_env("SINGING_API_KEY"),
+            vision_model=parse_optional_str_env("VISION_MODEL"),
+            osu_allow_online=parse_bool_env("OSU_ALLOW_ONLINE", False),
+            factorio_rcon_host=os.getenv("FACTORIO_RCON_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            factorio_rcon_port=int(os.getenv("FACTORIO_RCON_PORT", "27015")),
+            factorio_rcon_password=parse_optional_str_env("FACTORIO_RCON_PASSWORD"),
+            vrchat_osc_host=os.getenv("VRCHAT_OSC_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            vrchat_osc_port=int(os.getenv("VRCHAT_OSC_PORT", "9000")),
         )

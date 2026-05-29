@@ -15,3 +15,8 @@ dateparser>=1.1,<2
 pywebview[cef]>=5.3,<6
 # RAG memory embeddings (local, CPU-friendly). Optional but recommended.
 sentence-transformers>=2.7,<4
+# Optional game-playing extras (install as needed; lazy-imported by drivers):
+#   Universal vision+input driver (Terraria/Unturned/Celeste/etc.):
+#     pip install mss pillow pydirectinput   (pydirectinput is Windows-only)
+#   VRChat OSC driver:
+#     pip install python-osc

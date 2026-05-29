@@ -835,7 +835,30 @@ class Api:
             "goal": self.game_agent.goal if self.game_agent else "",
         }
 
-    def start_game(self, goal: str = "") -> dict[str, Any]:
+    def _build_game_driver(self, driver_name: str):
+        if driver_name == "minecraft":
+            from .games.minecraft import MinecraftDriver
+
+            return MinecraftDriver(self.config)
+        if driver_name == "universal":
+            from .games.universal import UniversalGameDriver
+
+            return UniversalGameDriver(self.config)
+        if driver_name == "osu":
+            from .games.osu import OsuDriver
+
+            return OsuDriver(self.config)
+        if driver_name == "factorio":
+            from .games.factorio import FactorioDriver
+
+            return FactorioDriver(self.config)
+        if driver_name == "vrchat":
+            from .games.vrchat import VRChatDriver
+
+            return VRChatDriver(self.config)
+        return None
+
+    def start_game(self, goal: str = "", driver: str = "") -> dict[str, Any]:
         if (err := self._not_ready()):
             return err
         if self.game_agent and self.game_agent.is_running():
@@ -843,16 +866,20 @@ class Api:
         try:
             from .games.agent import GameAgent
 
-            driver_name = self.config.game_driver
-            if driver_name == "minecraft":
-                from .games.minecraft import MinecraftDriver
-
-                driver = MinecraftDriver(self.config)
-            else:
+            driver_name = (driver or self.config.game_driver or "minecraft").strip().lower()
+            game_driver = self._build_game_driver(driver_name)
+            if game_driver is None:
                 return {"ok": False, "msg": f"Unknown game driver: {driver_name}"}
+            if driver_name == "osu" and not self.config.osu_allow_online:
+                self._push_chat(
+                    "System",
+                    "osu! automation on official servers is bannable. Running in "
+                    "OFFLINE/solo mode only. Use at your own risk.",
+                    "system",
+                )
 
             self.game_agent = GameAgent(
-                driver=driver,
+                driver=game_driver,
                 config=self.config,
                 profile_getter=lambda: self.profile,
                 narrate=self._game_narrate,
