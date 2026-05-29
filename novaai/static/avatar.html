@@ -217,6 +217,7 @@
   let speaking = false;
   let currentEmotion = 'neutral';
   let boneNodes = {};     // cached humanoid bone nodes for posing
+  let dancing = false;    // rhythmic dance overlay when enjoying music
 
   function resize() {
     const width = canvas.clientWidth;
@@ -298,10 +299,10 @@
   // Base resting pose (radians) applied to humanoid bones. Lowers the arms so the
   // avatar isn't T-posing. Left arm uses negative Z, right arm positive Z.
   const REST_POSE = {
-    leftUpperArm:  { z: -1.22, x: 0.05 },
-    rightUpperArm: { z:  1.22, x: 0.05 },
-    leftLowerArm:  { z: -0.18 },
-    rightLowerArm: { z:  0.18 },
+    leftUpperArm:  { z: 1.30, x: 0.08 },
+    rightUpperArm: { z: -1.30, x: 0.08 },
+    leftLowerArm:  { z: 0.22, x: 0.10 },
+    rightLowerArm: { z: -0.22, x: 0.10 },
   };
   // Emotion deltas added on top of the rest pose (body language).
   const EMOTION_POSE = {
@@ -314,8 +315,9 @@
     relaxed:   {},
     neutral:   {},
   };
-  const POSE_BONES = ['head', 'neck', 'chest', 'upperChest', 'spine',
-    'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm'];
+  const POSE_BONES = ['hips', 'head', 'neck', 'chest', 'upperChest', 'spine',
+    'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm',
+    'leftHand', 'rightHand'];
 
   function cacheBones(vrm) {
     boneNodes = {};
@@ -349,12 +351,35 @@
     const ep = EMOTION_POSE[currentEmotion] || {};
     for (const [name, rot] of Object.entries(ep))
       for (const ax in rot) add(name, ax, rot[ax]);
-    // breathing + idle sway + subtle look-around; a touch more motion when speaking
+    // Breathing + organic idle: gentle sway, slow weight-shift between hips,
+    // subtle look-around and arm micro-motion so she reads as a living person.
     add('chest', 'x', Math.sin(t * 1.1) * 0.018 + (speaking ? Math.sin(t * 6) * 0.012 : 0));
     add('upperChest', 'x', Math.sin(t * 1.1) * 0.01);
-    add('spine', 'z', Math.sin(t * 0.6) * 0.02);
-    add('head', 'y', Math.sin(t * 0.5) * 0.04);
+    const weightShift = Math.sin(t * 0.23) * 0.035;   // slow lean left/right
+    add('hips', 'z', weightShift);
+    add('spine', 'z', Math.sin(t * 0.6) * 0.02 - weightShift * 0.5);
+    add('head', 'y', Math.sin(t * 0.5) * 0.05);
     add('head', 'x', Math.sin(t * 0.8) * 0.015);
+    add('head', 'z', -weightShift * 0.4);
+    add('leftUpperArm', 'x', Math.sin(t * 0.5) * 0.025);
+    add('rightUpperArm', 'x', Math.sin(t * 0.5 + 1.0) * 0.025);
+
+    // Dance overlay: rhythmic body sway, arm swing, head bob (when enjoying music).
+    let hop = 0;
+    if (dancing) {
+      const beat = t * 7.4;            // groovy mid-tempo
+      const s = Math.sin(beat);
+      add('hips', 'z', s * 0.10);
+      add('spine', 'z', s * 0.12);
+      add('chest', 'z', s * 0.08);
+      add('head', 'z', s * 0.14);
+      add('head', 'y', Math.sin(beat * 0.5) * 0.22);
+      add('leftUpperArm', 'z', s * 0.5);
+      add('rightUpperArm', 'z', s * 0.5);
+      add('leftLowerArm', 'x', -(0.5 + s * 0.3));
+      add('rightLowerArm', 'x', -(0.5 - s * 0.3));
+      hop = Math.abs(Math.sin(beat)) * 0.05;
+    }
 
     const k = Math.min(1, delta * 6); // smoothing toward target
     for (const [name, rot] of Object.entries(target)) {
@@ -363,6 +388,11 @@
       node.rotation.x += ((rot.x || 0) - node.rotation.x) * k;
       node.rotation.y += ((rot.y || 0) - node.rotation.y) * k;
       node.rotation.z += ((rot.z || 0) - node.rotation.z) * k;
+    }
+
+    // Little vertical hop while dancing (smoothly settles back when idle).
+    if (currentVrm) {
+      currentVrm.scene.position.y += (hop - currentVrm.scene.position.y) * Math.min(1, delta * 8);
     }
   }
 
@@ -483,6 +513,11 @@
           setExpressionStatus(payload.emotion);
           applyExpression(payload.emotion);
         }
+      }
+
+      if (payload.type === 'dance') {
+        dancing = !!payload.on;
+        logMessage(dancing ? 'Dancing to the music!' : 'Stopped dancing.');
       }
 
       if (payload.type === 'reminder') {

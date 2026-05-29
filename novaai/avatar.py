@@ -291,6 +291,9 @@ class AvatarBridge:
             {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
         )
 
+    def publish_dance(self, on: bool) -> None:
+        self._broadcast({"type": "dance", "on": bool(on)})
+
     def publish_reminder(self, reminder: dict[str, object]) -> None:
         self._broadcast({"type": "reminder", "event": "due", "reminder": reminder})
 

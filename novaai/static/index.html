@@ -332,13 +332,15 @@ tailwind.config = {
         </div>
 
         <div class="card p-5">
-          <div class="text-[13px] font-bold mb-3">Test Expressions</div>
+          <div class="text-[13px] font-bold mb-3">Test Expressions &amp; Motion</div>
           <div class="flex flex-wrap gap-2">
             <button onclick="doTestEmotion('happy')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Happy</button>
             <button onclick="doTestEmotion('sad')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Sad</button>
             <button onclick="doTestEmotion('angry')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Angry</button>
             <button onclick="doTestEmotion('anxious')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Anxious</button>
             <button onclick="doTestEmotion('neutral')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Neutral</button>
+            <button onclick="doDance(true)" class="btn-primary px-3 py-1.5 rounded text-[12px]">Dance</button>
+            <button onclick="doDance(false)" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Stop Dance</button>
           </div>
         </div>
       </div>
@@ -946,6 +948,7 @@ async function doOpenAvatarWindow() {
 }
 async function doAvatarToggle(key, val) { try { await api().set_avatar_option(key, val); } catch(e) { console.error(e); } }
 async function doTestEmotion(em) { try { const r = await api().test_avatar_emotion(em); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
+async function doDance(on) { try { await api().set_dancing(on); } catch(e) { console.error(e); } }
 
 // ── Game ───────────────────────────────────────────────────────────────────
 

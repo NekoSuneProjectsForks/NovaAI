@@ -353,6 +353,12 @@ class Api:
             append_history("user", user_text)
             append_history("assistant", media_action.response)
             self._push_chat(companion, media_action.response, "assistant")
+            # Dance to the music (or stop when playback stops).
+            low = user_text.lower()
+            if any(w in low for w in ("stop", "pause", "silence", "quiet", "turn off")):
+                self._avatar_dance(False)
+            elif any(w in low for w in ("play", "radio", "music", "song", "listen")):
+                self._avatar_dance(True)
             self._push_status("Media request handled.")
             return "Media request handled."
 
@@ -786,6 +792,17 @@ class Api:
             pass
         return {"ok": True}
 
+    def _avatar_dance(self, on: bool) -> None:
+        if self.avatar is not None:
+            try:
+                self.avatar.publish_dance(on)
+            except Exception:
+                pass
+
+    def set_dancing(self, on: bool) -> dict[str, Any]:
+        self._avatar_dance(bool(on))
+        return {"ok": True, "dancing": bool(on)}
+
     def test_avatar_emotion(self, emotion: str) -> dict[str, Any]:
         if self.avatar is None:
             return {"ok": False, "msg": "Avatar not running."}
@@ -941,12 +958,14 @@ class Api:
                         self.avatar.publish_speaking(True, "happy")
                     except Exception:
                         pass
+                self._avatar_dance(True)
                 cb = self._amplitude_cb() if self.avatar is not None else None
                 self._push_status("Singing...")
                 play_audio_file(path, self.config.speaker_device_index, on_amplitude=cb)
             except Exception as exc:
                 self._push_chat("System", f"Singing failed: {exc}", "system")
             finally:
+                self._avatar_dance(False)
                 if self.avatar is not None:
                     try:
                         self.avatar.publish_viseme(0.0)
