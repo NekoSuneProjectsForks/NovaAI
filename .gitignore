@@ -53,3 +53,5 @@ vendor/
 # ── OS junk ──────────────────────────────────────────────────────────────
 *.log
 *.tmp
+data/novaai.db-wal
+data/novaai.db-shm

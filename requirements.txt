@@ -13,3 +13,5 @@ transformers>=4.57,<5
 websockets>=11,<12
 dateparser>=1.1,<2
 pywebview[cef]>=5.3,<6
+# RAG memory embeddings (local, CPU-friendly). Optional but recommended.
+sentence-transformers>=2.7,<4

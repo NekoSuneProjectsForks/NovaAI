@@ -187,7 +187,18 @@
   const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 1000);
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
-  renderer.setClearColor(0x07131d, 1);
+
+  // OBS transparency: ?transparent=1 makes the background see-through so the
+  // avatar can be dropped into a Browser Source over your game capture.
+  const QUERY = new URLSearchParams(location.search);
+  const TRANSPARENT = QUERY.has('transparent');
+  const IDLE_ENABLED = !QUERY.has('noidle');
+  renderer.setClearColor(0x07131d, TRANSPARENT ? 0 : 1);
+  if (TRANSPARENT) {
+    document.body.style.background = 'transparent';
+    document.querySelectorAll('header, .panel:not(:has(#viewer))').forEach(el => el.style.display = 'none');
+  }
+
   const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
   scene.add(light);
   const directional = new THREE.DirectionalLight(0xffffff, 0.7);
@@ -197,9 +208,14 @@
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
 
+  const clock = new THREE.Clock();
   let currentVrm = null;
   let ws = null;
   let targetUrl = null;
+  let mouthCurrent = 0;   // smoothed mouth-open value driven by TTS amplitude
+  let mouthTarget = 0;
+  let speaking = false;
+  let currentEmotion = 'neutral';
 
   function resize() {
     const width = canvas.clientWidth;
@@ -231,40 +247,61 @@
     expressionBadge.textContent = label;
   }
 
+  // three-vrm v3 uses vrm.expressionManager with lowercase preset names
+  // (happy/angry/sad/relaxed/neutral). It also normalizes legacy VRM 0.x
+  // blendshapes (Joy/Angry/Sorrow/Fun) onto the same names.
+  const EMOTION_PRESETS = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+
   function applyExpression(expression) {
-    if (!currentVrm || !currentVrm.blendShapeProxy) {
-      return;
-    }
-
-    const proxy = currentVrm.blendShapeProxy;
-    const presets = ['Neutral', 'Joy', 'Angry', 'Sorrow', 'Fun'];
-    presets.forEach((preset) => {
-      try {
-        proxy.setValue(preset, 0);
-      } catch (error) {
-        // Ignore missing blendshape presets.
-      }
+    currentEmotion = String(expression || 'neutral').toLowerCase();
+    if (!currentVrm || !currentVrm.expressionManager) return;
+    const em = currentVrm.expressionManager;
+    EMOTION_PRESETS.forEach((preset) => {
+      try { em.setValue(preset, 0); } catch (error) { /* missing preset */ }
     });
-
-    const emotionPreset = {
-      happy: 'Joy',
-      joy: 'Joy',
-      sad: 'Sorrow',
-      angry: 'Angry',
-      anxious: 'Fun',
-      neutral: 'Neutral',
-    }[String(expression).toLowerCase()] || 'Neutral';
-
-    try {
-      proxy.setValue(emotionPreset, 1);
-      proxy.update();
-    } catch (error) {
-      // Some VRM files may not support blendshape expressions.
-    }
+    const preset = {
+      happy: 'happy', joy: 'happy',
+      sad: 'sad', sorrow: 'sad',
+      angry: 'angry',
+      anxious: 'relaxed', fun: 'relaxed', relaxed: 'relaxed',
+      surprised: 'surprised',
+      neutral: 'neutral',
+    }[currentEmotion] || 'neutral';
+    try { em.setValue(preset, 1); } catch (error) { /* unsupported */ }
   }
 
   function animate() {
     requestAnimationFrame(animate);
+    const delta = clock.getDelta();
+    const t = clock.elapsedTime;
+
+    if (currentVrm) {
+      const em = currentVrm.expressionManager;
+
+      // Lip-sync: smoothly chase the amplitude target; decay when not speaking.
+      mouthCurrent += (mouthTarget - mouthCurrent) * Math.min(1, delta * 18);
+      if (!speaking) mouthTarget *= 0.85;
+      if (em) {
+        try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
+      }
+
+      // Procedural idle: gentle breathing + periodic blink (zero animation assets).
+      if (IDLE_ENABLED && currentVrm.humanoid) {
+        const chest = currentVrm.humanoid.getNormalizedBoneNode('chest')
+          || currentVrm.humanoid.getNormalizedBoneNode('upperChest')
+          || currentVrm.humanoid.getNormalizedBoneNode('spine');
+        if (chest) {
+          chest.rotation.x = Math.sin(t * 1.1) * 0.018 + (speaking ? Math.sin(t * 6) * 0.012 : 0);
+        }
+        if (em) {
+          const phase = t % 4.0;
+          const blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+          try { em.setValue('blink', blink); } catch (e) {}
+        }
+      }
+
+      currentVrm.update(delta);
+    }
     renderer.render(scene, camera);
   }
 
@@ -343,6 +380,19 @@
         setExpressionStatus(emotion);
         applyExpression(emotion);
         logMessage(`State update: emotion=${emotion} danger=${state.danger ? 'yes' : 'no'}`);
+      }
+
+      if (payload.type === 'viseme') {
+        mouthTarget = Math.max(0, Math.min(1, payload.mouth || 0));
+      }
+
+      if (payload.type === 'speaking') {
+        speaking = !!payload.speaking;
+        if (!speaking) mouthTarget = 0;
+        if (payload.emotion) {
+          setExpressionStatus(payload.emotion);
+          applyExpression(payload.emotion);
+        }
       }
 
       if (payload.type === 'reminder') {

@@ -464,9 +464,14 @@ def request_reply(
     profile: dict[str, Any],
     config: Config,
     web_context: str | None = None,
+    extra_system: list[str] | None = None,
+    history: list[dict[str, str]] | None = None,
+    speaker_label: str | None = None,
 ) -> str:
     messages = [{"role": "system", "content": build_system_prompt(profile)}]
-    messages.extend(read_recent_history(config.history_turns))
+    messages.extend(
+        history if history is not None else read_recent_history(config.history_turns)
+    )
     if web_context:
         messages.append(
             {
@@ -483,7 +488,14 @@ def request_reply(
             }
         )
         messages.append({"role": "system", "content": web_context})
-    messages.append({"role": "user", "content": user_text})
+    for system_note in extra_system or []:
+        note = str(system_note).strip()
+        if note:
+            messages.append({"role": "system", "content": note})
+    final_user_text = (
+        f"{speaker_label}: {user_text}" if speaker_label else user_text
+    )
+    messages.append({"role": "user", "content": final_user_text})
 
     if config.llm_provider == "ollama":
         payload = {

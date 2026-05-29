@@ -206,6 +206,14 @@ class AvatarBridge:
     def publish_state(self, state: dict[str, object]) -> None:
         self._broadcast({"type": "state", "payload": state})
 
+    def publish_viseme(self, mouth: float) -> None:
+        self._broadcast({"type": "viseme", "mouth": float(mouth)})
+
+    def publish_speaking(self, speaking: bool, emotion: str = "neutral") -> None:
+        self._broadcast(
+            {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
+        )
+
     def publish_reminder(self, reminder: dict[str, object]) -> None:
         self._broadcast({"type": "reminder", "event": "due", "reminder": reminder})
 

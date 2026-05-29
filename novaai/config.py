@@ -127,6 +127,28 @@ def normalize_tts_provider(value: str) -> str:
     return "xtts"
 
 
+def normalize_twitch_reply_mode(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"all", "everything", "every"}:
+        return "all"
+    if normalized in {"command", "commands", "!ask", "cmd"}:
+        return "command"
+    return "mention"
+
+
+def normalize_rag_embedding_provider(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"openai", "openai-compatible", "api", "remote"}:
+        return "openai"
+    return "local"
+
+
+def normalize_twitch_channel(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip().lstrip("#").lower()
+
+
 def resolve_llm_api_url(provider: str, raw_url: str | None) -> str:
     if provider == "openai":
         candidate = (raw_url or "https://api.openai.com/v1/chat/completions").strip()
@@ -241,6 +263,35 @@ class Config:
     speaker_device_index: int | None
     mic_sample_rate: int | None
     mic_chunk_size: int
+    # Twitch
+    twitch_enabled: bool
+    twitch_channel: str
+    twitch_bot_username: str
+    twitch_oauth_token: str | None
+    twitch_reply_mode: str
+    twitch_reply_cooldown_seconds: float
+    # RAG memory
+    rag_enabled: bool
+    rag_embedding_provider: str
+    rag_embedding_model: str
+    rag_top_k: int
+    rag_min_score: float
+    # Game playing
+    game_enabled: bool
+    game_driver: str
+    game_tick_seconds: float
+    mc_host: str
+    mc_port: int
+    mc_username: str
+    mc_auth: str
+    mc_bridge_port: int
+    node_path: str | None
+    # Singing
+    singing_enabled: bool
+    singing_backend: str
+    rvc_model_path: str | None
+    singing_api_url: str | None
+    singing_api_key: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -487,4 +538,41 @@ class Config:
             speaker_device_index=parse_optional_int_env("SPEAKER_DEVICE_INDEX"),
             mic_sample_rate=parse_optional_int_env("MIC_SAMPLE_RATE"),
             mic_chunk_size=mic_chunk_size,
+            twitch_enabled=parse_bool_env("TWITCH_ENABLED", False),
+            twitch_channel=normalize_twitch_channel(os.getenv("TWITCH_CHANNEL")),
+            twitch_bot_username=(
+                parse_optional_str_env("TWITCH_BOT_USERNAME") or ""
+            ).lower(),
+            twitch_oauth_token=parse_optional_str_env("TWITCH_OAUTH_TOKEN"),
+            twitch_reply_mode=normalize_twitch_reply_mode(
+                os.getenv("TWITCH_REPLY_MODE", "mention")
+            ),
+            twitch_reply_cooldown_seconds=max(
+                0.0, float(os.getenv("TWITCH_REPLY_COOLDOWN", "8"))
+            ),
+            rag_enabled=parse_bool_env("RAG_ENABLED", True),
+            rag_embedding_provider=normalize_rag_embedding_provider(
+                os.getenv("RAG_EMBEDDING_PROVIDER", "local")
+            ),
+            rag_embedding_model=os.getenv(
+                "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+            ),
+            rag_top_k=max(1, min(12, int(os.getenv("RAG_TOP_K", "4")))),
+            rag_min_score=float(os.getenv("RAG_MIN_SCORE", "0.25")),
+            game_enabled=parse_bool_env("GAME_ENABLED", False),
+            game_driver=os.getenv("GAME_DRIVER", "minecraft").strip().lower() or "minecraft",
+            game_tick_seconds=max(1.0, float(os.getenv("GAME_TICK_SECONDS", "4"))),
+            mc_host=os.getenv("MC_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            mc_port=int(os.getenv("MC_PORT", "25565")),
+            mc_username=os.getenv("MC_USERNAME", "NovaAI").strip() or "NovaAI",
+            mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
+            mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
+            node_path=parse_optional_str_env("NODE_PATH"),
+            singing_enabled=parse_bool_env("SINGING_ENABLED", False),
+            singing_backend=(
+                "rvc" if os.getenv("SINGING_BACKEND", "cloud").strip().lower() == "rvc" else "cloud"
+            ),
+            rvc_model_path=parse_optional_str_env("RVC_MODEL_PATH"),
+            singing_api_url=parse_optional_str_env("SINGING_API_URL"),
+            singing_api_key=parse_optional_str_env("SINGING_API_KEY"),
         )

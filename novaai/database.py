@@ -58,6 +58,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_history_ts ON history(timestamp);
+
+        CREATE TABLE IF NOT EXISTS memories (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id TEXT    NOT NULL,
+            source     TEXT    NOT NULL DEFAULT 'chat',
+            speaker    TEXT    NOT NULL DEFAULT '',
+            content    TEXT    NOT NULL,
+            embedding  BLOB,
+            score      REAL    NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mem_profile ON memories(profile_id);
     """)
     conn.commit()
 
@@ -191,6 +204,64 @@ def history_row_count() -> int:
     conn = get_connection()
     row = conn.execute("SELECT COUNT(*) AS cnt FROM history").fetchone()
     return row["cnt"] if row else 0
+
+
+# ── memory helpers ─────────────────────────────────────────────────────────
+
+def insert_memory(
+    profile_id: str,
+    source: str,
+    speaker: str,
+    content: str,
+    embedding: bytes | None,
+    score: float,
+    created_at: str,
+) -> int:
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO memories(profile_id, source, speaker, content, embedding, score, created_at) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?)",
+        (profile_id, source, speaker, content, embedding, score, created_at),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def fetch_memories_for_profile(profile_id: str) -> list[dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, source, speaker, content, embedding, score, created_at "
+        "FROM memories WHERE profile_id=? ORDER BY id DESC",
+        (profile_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def bump_memory_score(memory_id: int, delta: float) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE memories SET score = score + ? WHERE id=?",
+        (delta, memory_id),
+    )
+    conn.commit()
+
+
+def delete_memory(memory_id: int) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+    conn.commit()
+
+
+def prune_low_memories(profile_id: str, min_score: float, keep_recent: int) -> int:
+    """Delete memories below *min_score*, except the *keep_recent* newest rows."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "DELETE FROM memories WHERE profile_id=? AND score < ? AND id NOT IN "
+        "(SELECT id FROM memories WHERE profile_id=? ORDER BY id DESC LIMIT ?)",
+        (profile_id, min_score, profile_id, keep_recent),
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 # ── migration: import from legacy JSON files ──────────────────────────────
