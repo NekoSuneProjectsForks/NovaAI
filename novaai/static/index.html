@@ -1345,14 +1345,28 @@ function playAlarmTone() {
 
 // ── Init ─────────────────────────────────────────────────────────────────
 
+function _apiReady() {
+  return !!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.initialize === 'function');
+}
+
 async function init() {
-  // Wait for pywebview API bridge
+  // Wait for the pywebview API bridge AND its methods to attach. pywebview sets
+  // window.pywebview first and wires up the js_api methods slightly later (it
+  // also fires a 'pywebviewready' event), so polling only for window.pywebview
+  // races and "initialize is not a function".
+  let readyFired = false;
+  window.addEventListener('pywebviewready', () => { readyFired = true; });
   let tries = 0;
-  while (!window.pywebview && tries < 100) {
+  while (!_apiReady() && tries < 400) {            // up to ~20s
     await new Promise(r => setTimeout(r, 50));
     tries++;
   }
-  if (!api()) { dismissLoader(); document.body.innerHTML = '<div class="p-8 text-red-400">Failed to connect to backend.</div>'; return; }
+  if (!_apiReady()) {
+    dismissLoader();
+    document.body.innerHTML = '<div class="p-8 text-red-400">Failed to connect to backend (API bridge not ready' +
+      (readyFired ? ', methods missing' : '') + '). Please restart NovaAI.</div>';
+    return;
+  }
 
   // Heavy backend init (config, DB, profiles) — runs while the loading screen is shown
   let initError = null;
