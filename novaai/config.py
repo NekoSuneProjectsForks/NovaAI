@@ -53,6 +53,19 @@ def normalize_stt_provider(value: str) -> str:
 def normalize_llm_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {
+        "claude",
+        "claude-code",
+        "claudecode",
+        "claude-cli",
+        "claude_code",
+        "anthropic-cli",
+    }:
+        return "claude-code"
+    if normalized in {"codex", "codex-cli", "codex_cli", "openai-codex"}:
+        return "codex"
+    if normalized in {"cli", "custom-cli", "command", "shell"}:
+        return "cli"
+    if normalized in {
         "openai",
         "chatgpt",
         "openai-compatible",
@@ -68,6 +81,22 @@ def normalize_llm_provider(value: str) -> str:
     }:
         return "openai"
     return "ollama"
+
+
+def resolve_model_label(
+    provider: str,
+    explicit_model: str | None,
+    ollama_default: str,
+    cli_model: str | None,
+) -> str:
+    if provider in {"claude-code", "codex", "cli"}:
+        defaults = {
+            "claude-code": "Claude Code (CLI)",
+            "codex": "Codex (CLI)",
+            "cli": "Custom CLI",
+        }
+        return cli_model or defaults.get(provider, provider)
+    return explicit_model or ollama_default
 
 
 def normalize_web_safesearch(value: str) -> str:
@@ -216,6 +245,10 @@ class Config:
     llm_api_key: str | None
     llm_keep_alive: str
     llm_num_predict: int
+    llm_cli_command: str | None
+    claude_cli_path: str | None
+    codex_cli_path: str | None
+    cli_model: str | None
     tts_provider: str
     tts_language: str
     xtts_model_name: str
@@ -452,10 +485,11 @@ class Config:
             ),
             system_summary=describe_system_capabilities(capabilities),
             llm_provider=llm_provider,
-            model=(
-                parse_optional_str_env("LLM_MODEL")
-                or parse_optional_str_env("OPENAI_MODEL")
-                or os.getenv("OLLAMA_MODEL", "dolphin3")
+            model=resolve_model_label(
+                llm_provider,
+                parse_optional_str_env("LLM_MODEL") or parse_optional_str_env("OPENAI_MODEL"),
+                os.getenv("OLLAMA_MODEL", "dolphin3"),
+                parse_optional_str_env("LLM_CLI_MODEL"),
             ),
             llm_api_url=llm_api_url,
             llm_api_key=(
@@ -467,6 +501,10 @@ class Config:
                 or os.getenv("OLLAMA_KEEP_ALIVE", "30m")
             ),
             llm_num_predict=llm_num_predict,
+            llm_cli_command=parse_optional_str_env("LLM_CLI_COMMAND"),
+            claude_cli_path=parse_optional_str_env("CLAUDE_CLI_PATH"),
+            codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),
+            cli_model=parse_optional_str_env("LLM_CLI_MODEL"),
             tts_provider=tts_provider,
             tts_language=os.getenv("XTTS_LANGUAGE")
             or os.getenv("TTS_LANG")
