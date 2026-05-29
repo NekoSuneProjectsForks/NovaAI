@@ -19,18 +19,58 @@ DB_PATH = DATA_DIR / "novaai.db"
 _local = threading.local()
 
 
+def _open_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.row_factory = sqlite3.Row
+        _ensure_schema(conn)
+    except Exception:
+        # Release the handle so a corrupt file can be renamed/removed on Windows.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
+    return conn
+
+
+def _quarantine_corrupt_db() -> None:
+    """Move a corrupt DB (and its WAL/SHM) aside so a fresh one can be created."""
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(DB_PATH) + suffix)
+        if path.exists():
+            try:
+                backup = Path(str(path) + ".corrupt")
+                if backup.exists():
+                    backup.unlink()
+                path.rename(backup)
+            except OSError:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
 def get_connection() -> sqlite3.Connection:
-    """Return a thread-local SQLite connection, creating the DB if needed."""
+    """Return a thread-local SQLite connection, creating the DB if needed.
+
+    If the database file is corrupt (e.g. a stale/deleted WAL), it is moved aside
+    and recreated rather than letting the error bubble up and brick startup. The
+    caller's normal migration/seed path then repopulates it from the legacy JSON.
+    """
     conn: sqlite3.Connection | None = getattr(_local, "conn", None)
     if conn is not None:
         return conn
     DATA_DIR.mkdir(exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.row_factory = sqlite3.Row
+    try:
+        conn = _open_connection()
+    except sqlite3.DatabaseError:
+        # Corrupt / not-a-database: quarantine and rebuild once.
+        _quarantine_corrupt_db()
+        conn = _open_connection()
     _local.conn = conn
-    _ensure_schema(conn)
     return conn
 
 

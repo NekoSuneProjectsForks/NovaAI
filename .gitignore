@@ -11,6 +11,7 @@
 .venv-xtts/
 venv/
 env/
+node_modules/
 
 # ── Python bytecode ──────────────────────────────────────────────────────
 __pycache__/
