@@ -216,6 +216,7 @@
   let mouthTarget = 0;
   let speaking = false;
   let currentEmotion = 'neutral';
+  let boneNodes = {};     // cached humanoid bone nodes for posing
 
   function resize() {
     const width = canvas.clientWidth;
@@ -293,6 +294,78 @@
     try { em.setValue(preset, 1); } catch (error) { /* unsupported */ }
   }
 
+  // ── Posing: break the default T-pose and add emotion body language ──────────
+  // Base resting pose (radians) applied to humanoid bones. Lowers the arms so the
+  // avatar isn't T-posing. Left arm uses negative Z, right arm positive Z.
+  const REST_POSE = {
+    leftUpperArm:  { z: -1.22, x: 0.05 },
+    rightUpperArm: { z:  1.22, x: 0.05 },
+    leftLowerArm:  { z: -0.18 },
+    rightLowerArm: { z:  0.18 },
+  };
+  // Emotion deltas added on top of the rest pose (body language).
+  const EMOTION_POSE = {
+    happy:     { head: { x: -0.05, z: 0.08 }, chest: { x: -0.04 } },
+    joy:       { head: { x: -0.05, z: 0.08 }, chest: { x: -0.04 } },
+    sad:       { head: { x: 0.28 }, chest: { x: 0.14 }, leftUpperArm: { z: 0.14 }, rightUpperArm: { z: -0.14 } },
+    angry:     { spine: { x: 0.14 }, head: { x: 0.08 }, chest: { x: 0.05 } },
+    anxious:   { head: { x: 0.12, y: 0.06 }, leftUpperArm: { z: 0.10 }, rightUpperArm: { z: -0.10 } },
+    surprised: { head: { x: -0.16 }, chest: { x: -0.06 } },
+    relaxed:   {},
+    neutral:   {},
+  };
+  const POSE_BONES = ['head', 'neck', 'chest', 'upperChest', 'spine',
+    'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm'];
+
+  function cacheBones(vrm) {
+    boneNodes = {};
+    if (!vrm.humanoid) return;
+    for (const name of POSE_BONES) {
+      boneNodes[name] = vrm.humanoid.getNormalizedBoneNode(name) || null;
+    }
+  }
+
+  // Snap straight to the rest pose (used once on load so framing sees real size).
+  function applyRestPoseImmediate() {
+    for (const [name, rot] of Object.entries(REST_POSE)) {
+      const node = boneNodes[name];
+      if (!node) continue;
+      node.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
+    }
+    if (currentVrm) currentVrm.scene.updateWorldMatrix(true, true);
+  }
+
+  function updatePose(delta, t) {
+    if (!IDLE_ENABLED) return;
+    const target = {};
+    const add = (name, ax, v) => {
+      if (!(name in target)) target[name] = { x: 0, y: 0, z: 0 };
+      target[name][ax] += v;
+    };
+    // rest pose
+    for (const [name, rot] of Object.entries(REST_POSE))
+      for (const ax in rot) add(name, ax, rot[ax]);
+    // emotion body language
+    const ep = EMOTION_POSE[currentEmotion] || {};
+    for (const [name, rot] of Object.entries(ep))
+      for (const ax in rot) add(name, ax, rot[ax]);
+    // breathing + idle sway + subtle look-around; a touch more motion when speaking
+    add('chest', 'x', Math.sin(t * 1.1) * 0.018 + (speaking ? Math.sin(t * 6) * 0.012 : 0));
+    add('upperChest', 'x', Math.sin(t * 1.1) * 0.01);
+    add('spine', 'z', Math.sin(t * 0.6) * 0.02);
+    add('head', 'y', Math.sin(t * 0.5) * 0.04);
+    add('head', 'x', Math.sin(t * 0.8) * 0.015);
+
+    const k = Math.min(1, delta * 6); // smoothing toward target
+    for (const [name, rot] of Object.entries(target)) {
+      const node = boneNodes[name];
+      if (!node) continue;
+      node.rotation.x += ((rot.x || 0) - node.rotation.x) * k;
+      node.rotation.y += ((rot.y || 0) - node.rotation.y) * k;
+      node.rotation.z += ((rot.z || 0) - node.rotation.z) * k;
+    }
+  }
+
   function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
@@ -308,19 +381,12 @@
         try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
       }
 
-      // Procedural idle: gentle breathing + periodic blink (zero animation assets).
-      if (IDLE_ENABLED && currentVrm.humanoid) {
-        const chest = currentVrm.humanoid.getNormalizedBoneNode('chest')
-          || currentVrm.humanoid.getNormalizedBoneNode('upperChest')
-          || currentVrm.humanoid.getNormalizedBoneNode('spine');
-        if (chest) {
-          chest.rotation.x = Math.sin(t * 1.1) * 0.018 + (speaking ? Math.sin(t * 6) * 0.012 : 0);
-        }
-        if (em) {
-          const phase = t % 4.0;
-          const blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
-          try { em.setValue('blink', blink); } catch (e) {}
-        }
+      // Body pose (rest pose + emotion + idle) and periodic blink.
+      updatePose(delta, t);
+      if (em) {
+        const phase = t % 4.0;
+        const blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+        try { em.setValue('blink', blink); } catch (e) {}
       }
 
       currentVrm.update(delta);
@@ -353,7 +419,9 @@
         vrm.scene.rotation.set(0, Math.PI, 0);   // face the camera
         vrm.scene.position.set(0, 0, 0);
         vrm.scene.scale.setScalar(1);
-        frameAvatar();                            // auto-fit to the model's size
+        cacheBones(vrm);                          // grab humanoid bones for posing
+        applyRestPoseImmediate();                 // lower arms out of the T-pose
+        frameAvatar();                            // auto-fit to the (posed) model
         setModelStatus(url.split('/').pop() || 'Loaded');
         applyExpression(expressionBadge.textContent.replace('Expression: ', '').toLowerCase());
       },
