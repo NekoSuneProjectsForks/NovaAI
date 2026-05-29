@@ -224,6 +224,29 @@
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
+    frameAvatar();
+  }
+
+  // Auto-frame the loaded VRM: center it and fit it to the viewport based on its
+  // actual bounding box, so any model (any height) lines up correctly instead of
+  // relying on hardcoded scale/position values.
+  function frameAvatar() {
+    if (!currentVrm) return;
+    currentVrm.scene.updateWorldMatrix(true, true);
+    const box = new THREE.Box3().setFromObject(currentVrm.scene);
+    if (box.isEmpty()) return;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const fov = (camera.fov * Math.PI) / 180;
+    const aspect = camera.aspect || 1;
+    const fitHeight = size.y / 2 / Math.tan(fov / 2);
+    const fitWidth = size.x / 2 / Math.tan(fov / 2) / aspect;
+    const dist = Math.max(fitHeight, fitWidth) * 1.15 + size.z;
+    camera.position.set(center.x, center.y, center.z + dist);
+    camera.near = Math.max(0.01, dist / 100);
+    camera.far = dist * 20;
+    camera.updateProjectionMatrix();
+    camera.lookAt(center.x, center.y, center.z);
   }
 
   function logMessage(message) {
@@ -327,11 +350,10 @@
 
         currentVrm = vrm;
         scene.add(vrm.scene);
-        vrm.scene.rotation.set(0, Math.PI, 0);
-        vrm.scene.position.set(0, -1.1, 0);
-        vrm.scene.scale.setScalar(1.4);
-        camera.position.set(0.0, 1.4, 2.6);
-        camera.lookAt(new THREE.Vector3(0, 1.0, 0));
+        vrm.scene.rotation.set(0, Math.PI, 0);   // face the camera
+        vrm.scene.position.set(0, 0, 0);
+        vrm.scene.scale.setScalar(1);
+        frameAvatar();                            // auto-fit to the model's size
         setModelStatus(url.split('/').pop() || 'Loaded');
         applyExpression(expressionBadge.textContent.replace('Expression: ', '').toLowerCase());
       },

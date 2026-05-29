@@ -103,7 +103,7 @@ def read_llm_setup_config() -> tuple[str, str, str]:
     )
     if provider == "ollama":
         model = (
-            env_values.get("LLM_MODEL")
+            env_values.get("OLLAMA_MODEL")
             or env_values.get("OLLAMA_MODEL")
             or DEFAULT_OLLAMA_MODEL
         )
