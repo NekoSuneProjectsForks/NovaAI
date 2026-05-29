@@ -506,7 +506,9 @@ def _cli_command_parts(config: Config) -> list[str]:
         return parts
     if provider == "codex":
         exe = _resolve_cli(config.codex_cli_path or "codex")
-        parts = [exe, "exec"]
+        # --skip-git-repo-check: we run in a temp cwd (not a git repo), which codex
+        # otherwise refuses. exec reads the prompt from stdin.
+        parts = [exe, "exec", "--skip-git-repo-check"]
         if config.cli_model:
             parts += ["--model", config.cli_model]
         return parts
