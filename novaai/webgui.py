@@ -839,7 +839,10 @@ class Api:
         if driver_name == "minecraft":
             from .games.minecraft import MinecraftDriver
 
-            return MinecraftDriver(self.config)
+            return MinecraftDriver(
+                self.config,
+                on_log=lambda line: self._push_chat("Minecraft", line, "system"),
+            )
         if driver_name == "universal":
             from .games.universal import UniversalGameDriver
 

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -21,16 +22,21 @@ from .base import GameCommand, GameObservation
 
 BRIDGE_DIR = ROOT_DIR / "node" / "minecraft-bridge"
 
-_VERBS = ["goto", "mine", "collect", "craft", "place", "say", "look", "wait", "stop"]
+_VERBS = [
+    "follow", "come", "bring", "find_in_chests", "withdraw", "drop",
+    "attack", "defend", "goto", "mine", "collect", "craft", "place",
+    "say", "look", "wait", "stop",
+]
 
 
 class MinecraftDriver:
     name = "Minecraft"
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, on_log: Callable[[str], None] | None = None) -> None:
         self.config = config
         self.bridge_port = config.mc_bridge_port
         self.base_url = f"http://127.0.0.1:{self.bridge_port}"
+        self.on_log = on_log or (lambda _msg: None)
         self._proc: subprocess.Popen | None = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
@@ -58,15 +64,26 @@ class MinecraftDriver:
             "--username", str(self.config.mc_username),
             "--bridge-port", str(self.bridge_port),
             "--auth", str(self.config.mc_auth),
+            "--owner", str(self.config.mc_owner_username or ""),
         ]
+        if self.config.mc_profiles_folder:
+            env_args += ["--profiles-folder", str(self.config.mc_profiles_folder)]
+        if self.config.mc_version:
+            env_args += ["--version", str(self.config.mc_version)]
+
+        # Capture stdout so we can surface bridge logs (esp. the Microsoft
+        # device-code login prompt) to the UI.
         self._proc = subprocess.Popen(
             env_args,
             cwd=str(BRIDGE_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
-        # Wait for the bridge to come up.
-        deadline = time.time() + 30
+        threading.Thread(target=self._pump_logs, daemon=True).start()
+        # Microsoft auth (device-code flow) can take a while; allow more time.
+        deadline = time.time() + (180 if self.config.mc_auth == "microsoft" else 30)
         while time.time() < deadline:
             if self._proc.poll() is not None:
                 raise RuntimeError("The Minecraft bridge process exited during startup.")
@@ -93,6 +110,18 @@ class MinecraftDriver:
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    def _pump_logs(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if line:
+                    self.on_log(line)
+        except Exception:
+            pass
 
     # ── observe / act ───────────────────────────────────────────────────────────
 
@@ -127,19 +156,38 @@ class MinecraftDriver:
 
     @staticmethod
     def _format(raw: dict[str, Any]) -> str:
-        if not raw:
+        if not raw or not raw.get("connected", True):
             return "No world data yet (bridge connecting)."
         pos = raw.get("position", {})
         inv = raw.get("inventory", [])
         nearby = raw.get("nearbyBlocks", [])
-        entities = raw.get("nearbyEntities", [])
+        players = raw.get("players", [])
+        hostiles = raw.get("nearbyHostiles", [])
         inv_text = ", ".join(f"{i.get('name')} x{i.get('count')}" for i in inv[:12]) or "empty"
+        players_text = (
+            ", ".join(f"{p.get('name')} ({p.get('distance')}m)" for p in players[:8]) or "none"
+        )
+        hostiles_text = (
+            ", ".join(f"{h.get('name')} ({h.get('distance')}m)" for h in hostiles[:8]) or "none"
+        )
+        owner = raw.get("owner")
+        if owner:
+            visible = raw.get("ownerVisible")
+            dist = raw.get("ownerDistance")
+            owner_line = (
+                f"Owner: {owner} — {'nearby at ' + str(dist) + 'm' if visible else 'not visible'}. "
+                "Honor your owner's commands (follow/come/bring/find) and defend them from hostiles."
+            )
+        else:
+            owner_line = "Owner: (none set)."
         lines = [
+            owner_line,
             f"Health: {raw.get('health', '?')}/20, Food: {raw.get('food', '?')}/20",
             f"Position: x={pos.get('x','?')} y={pos.get('y','?')} z={pos.get('z','?')}",
             f"Time: {raw.get('timeOfDay', '?')}",
             f"Inventory: {inv_text}",
             f"Nearby blocks: {', '.join(nearby[:12]) or 'none'}",
-            f"Nearby entities: {', '.join(entities[:8]) or 'none'}",
+            f"Players: {players_text}",
+            f"Nearby hostiles: {hostiles_text}",
         ]
         return "\n".join(lines)

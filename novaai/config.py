@@ -286,6 +286,10 @@ class Config:
     mc_auth: str
     mc_bridge_port: int
     node_path: str | None
+    owner_name: str
+    mc_owner_username: str
+    mc_profiles_folder: str | None
+    mc_version: str | None
     # Singing
     singing_enabled: bool
     singing_backend: str
@@ -576,6 +580,14 @@ class Config:
             mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
             mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
             node_path=parse_optional_str_env("NODE_PATH"),
+            owner_name=(parse_optional_str_env("OWNER_NAME") or ""),
+            mc_owner_username=(
+                parse_optional_str_env("MC_OWNER_USERNAME")
+                or parse_optional_str_env("OWNER_NAME")
+                or ""
+            ),
+            mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
+            mc_version=parse_optional_str_env("MC_VERSION"),
             singing_enabled=parse_bool_env("SINGING_ENABLED", False),
             singing_backend=(
                 "rvc" if os.getenv("SINGING_BACKEND", "cloud").strip().lower() == "rvc" else "cloud"
