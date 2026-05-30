@@ -77,6 +77,7 @@ class MinecraftDriver:
             env_args += ["--version", str(self.config.mc_version)]
         env_args += [
             "--viewer-port", str(self.config.mc_viewer_port),
+            "--inventory-port", str(self.config.mc_inventory_port),
             "--viewer-first-person", "true" if self.config.mc_viewer_first_person else "false",
         ]
         if self.config.mc_viewer_version:
@@ -264,7 +265,9 @@ class MinecraftDriver:
         )
 
     def viewer_url(self) -> str:
-        return f"http://127.0.0.1:{self.config.mc_viewer_port}"
+        # Combined dashboard (3D world + live inventory/crafting/furnace) served
+        # by the bridge.
+        return f"http://127.0.0.1:{self.config.mc_bridge_port}/view"
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

@@ -321,6 +321,7 @@ class Config:
     mc_auth: str
     mc_bridge_port: int
     mc_viewer_port: int
+    mc_inventory_port: int
     mc_viewer_first_person: bool
     mc_viewer_version: str | None
     node_path: str | None
@@ -633,6 +634,7 @@ class Config:
             mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
             mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
             mc_viewer_port=int(os.getenv("MC_VIEWER_PORT", "8768")),
+            mc_inventory_port=int(os.getenv("MC_INVENTORY_PORT", "8769")),
             mc_viewer_first_person=parse_bool_env("MC_VIEWER_FIRST_PERSON", False),
             mc_viewer_version=parse_optional_str_env("MC_VIEWER_VERSION"),
             node_path=parse_optional_str_env("NODE_PATH"),

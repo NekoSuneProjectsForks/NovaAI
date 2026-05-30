@@ -16,6 +16,7 @@
     "mineflayer": "^4.37.1",
     "mineflayer-pathfinder": "^2.4.5",
     "mineflayer-tool": "^1.2.0",
+    "mineflayer-web-inventory": "^1.8.5",
     "prismarine-viewer": "^1.33.0"
   }
 }

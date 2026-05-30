@@ -44,6 +44,7 @@ const VIEWER_PORT = parseInt(getArg('viewer-port', 'MC_VIEWER_PORT', '8768'), 10
 const VIEWER_FIRST_PERSON =
   String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'false')).toLowerCase() === 'true';
 const VIEWER_VERSION = String(getArg('viewer-version', 'MC_VIEWER_VERSION', '')).trim();
+const INVENTORY_PORT = parseInt(getArg('inventory-port', 'MC_INVENTORY_PORT', '8769'), 10);
 
 let homePos = null;   // remembered home location (set_home / MC_HOME=x,y,z)
 const HOME_ARG = String(getArg('home', 'MC_HOME', ''));
@@ -93,6 +94,27 @@ function log(msg) {
   // Printed to stdout; the Python driver forwards these lines to the UI.
   // eslint-disable-next-line no-console
   console.log('[novaai-bridge] ' + msg);
+}
+
+let inventoryStarted = false;
+function startWebInventory() {
+  // Live inventory viewer — also shows chest/crafting/furnace windows when the
+  // bot opens them, so you can watch it craft and smelt.
+  if (!INVENTORY_PORT || inventoryStarted) return;
+  let inventoryViewer;
+  try {
+    inventoryViewer = require('mineflayer-web-inventory');
+  } catch (e) {
+    log('Inventory view unavailable (npm install mineflayer-web-inventory).');
+    return;
+  }
+  try {
+    inventoryViewer(bot, { port: INVENTORY_PORT });
+    inventoryStarted = true;
+    log(`inventory view at http://127.0.0.1:${INVENTORY_PORT}`);
+  } catch (e) {
+    log('inventory view failed: ' + ((e && e.message) || e));
+  }
 }
 
 let viewerStarted = false;
@@ -194,6 +216,7 @@ function createBot() {
       bot.pathfinder.setMovements(new Movements(bot));
     } catch (e) { /* ignore */ }
     startViewer();
+    startWebInventory();
     startAutoEat();
     log(`spawned as ${bot.username}${OWNER ? `, owner = ${OWNER}` : ''}`);
   });
@@ -1594,7 +1617,33 @@ function sendJson(res, code, obj) {
   res.end(body);
 }
 
+function viewDashboardHtml() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>NovaAI — ${USERNAME} live view</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0e14;color:#cdd3df;font-family:system-ui,Segoe UI,Arial}
+  header{height:34px;display:flex;align-items:center;gap:14px;padding:0 12px;background:#11151f;border-bottom:1px solid #1d2330;font-size:13px}
+  header b{color:#c4b5fd}
+  .wrap{display:flex;height:calc(100% - 34px)}
+  .main{flex:1;min-width:0}
+  .side{width:340px;border-left:1px solid #1d2330;display:flex;flex-direction:column}
+  iframe{border:0;width:100%;height:100%;background:#07131d}
+  .side iframe{height:100%}
+</style></head><body>
+<header><b>NovaAI</b> live view — <span>${USERNAME}</span> on ${HOST}:${PORT}
+  &nbsp;·&nbsp; 3D world + inventory (chests/crafting/furnace show when opened)</header>
+<div class="wrap">
+  <div class="main"><iframe src="http://127.0.0.1:${VIEWER_PORT}/" title="3D"></iframe></div>
+  <div class="side"><iframe src="http://127.0.0.1:${INVENTORY_PORT}/" title="Inventory"></iframe></div>
+</div></body></html>`;
+}
+
 const server = http.createServer((req, res) => {
+  const path = (req.url || '').split('?')[0];
+  if (req.method === 'GET' && (path === '/view' || path === '/')) {
+    const html = viewDashboardHtml();
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(html);
+  }
   if (req.method === 'GET' && req.url === '/health') {
     return sendJson(res, 200, { ok: true, connected, lastError });
   }
