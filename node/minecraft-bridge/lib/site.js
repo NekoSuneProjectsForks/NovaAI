@@ -12,26 +12,58 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// Choose a texture/asset version both viewers can actually load. Their bundled
+// assets lag the newest MC, so on e.g. a 1.21.11 server we spoof the highest
+// supported version (1.21.4) or rendering/inventory break.
+function safeAssetVersion(botVersion) {
+  if (CFG.viewerVersion) return CFG.viewerVersion;
+  try {
+    const supported = require('prismarine-viewer').supportedVersions || [];
+    if (supported.length && !supported.includes(botVersion)) {
+      return supported[supported.length - 1];
+    }
+  } catch (e) { /* fall through */ }
+  return botVersion;
+}
+
+// A thin proxy that only overrides `.version`, so a plugin loads assets/data for
+// a supported version while everything else still comes from the real bot.
+function versionProxy(bot, version) {
+  if (version === bot.version) return bot;
+  return new Proxy(bot, { get(t, p) { return p === 'version' ? version : t[p]; } });
+}
+
+// mineflayer-web-inventory does `mcAssets.textureContent[item.name].texture`,
+// which throws for any item missing from the (older) asset set — crashing on
+// every inventory update on a too-new server. Pre-load the asset version and
+// wrap textureContent so missing items return a blank texture instead.
+function hardenInventoryAssets(version) {
+  try {
+    const mcAssets = require('minecraft-assets')(version); // cached by the plugin
+    if (mcAssets && mcAssets.textureContent && !mcAssets.__hardened) {
+      const real = mcAssets.textureContent;
+      const blank = { texture: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC' };
+      mcAssets.textureContent = new Proxy(real, {
+        get(t, name) { return t[name] !== undefined ? t[name] : blank; },
+      });
+      mcAssets.__hardened = true;
+    }
+  } catch (e) { /* if assets can't load, the plugin will just no-op */ }
+}
+
 function startPublicSite() {
   if (!CFG.viewerPort || state.publicStarted) return;
   const bot = state.bot;
   const viewerInternal = CFG.viewerPort + 1;
   const invInternal = CFG.viewerPort + 2;
+  const assetVersion = safeAssetVersion(bot.version);
+  const renderBot = versionProxy(bot, assetVersion);
 
-  // 3D viewer internally under the /world prefix, with version fallback so a
-  // very new server still renders with the highest supported textures.
+  // 3D viewer internally under the /world prefix.
   let viewerOk = false;
   try {
-    const { mineflayer: mineflayerViewer, supportedVersions } = require('prismarine-viewer');
-    let assetVersion = bot.version;
-    if (CFG.viewerVersion) assetVersion = CFG.viewerVersion;
-    else if ((supportedVersions || []).length && !supportedVersions.includes(bot.version)) {
-      assetVersion = supportedVersions[supportedVersions.length - 1];
-    }
-    const viewerBot = assetVersion === bot.version
-      ? bot
-      : new Proxy(bot, { get(t, p) { return p === 'version' ? assetVersion : t[p]; } });
-    mineflayerViewer(viewerBot, {
+    const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
+    mineflayerViewer(renderBot, {
       port: viewerInternal, firstPerson: CFG.viewerFirstPerson, viewDistance: 6, prefix: '/world',
     });
     viewerOk = true;
@@ -40,9 +72,12 @@ function startPublicSite() {
     log('3D view unavailable (' + ((e && e.message) || e) + ') — run npm install.');
   }
 
+  // Inventory viewer — version-proxied + hardened assets so it doesn't crash on
+  // items missing from the older texture set.
   let invOk = false;
   try {
-    require('mineflayer-web-inventory')(bot, { port: invInternal });
+    hardenInventoryAssets(assetVersion);
+    require('mineflayer-web-inventory')(renderBot, { port: invInternal });
     invOk = true;
   } catch (e) {
     log('Inventory view unavailable (' + ((e && e.message) || e) + ').');
