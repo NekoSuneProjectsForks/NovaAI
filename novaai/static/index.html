@@ -1042,11 +1042,18 @@ window.__onGameUpdate = function(state) {
   if (!state || state.connected === false) { el.innerHTML = '<span>Connecting to game...</span>'; return; }
   const inv = (state.inventory || []).map(i => `${i.name} x${i.count}`).join(', ') || 'empty';
   const pos = state.position || {};
+  const players = (state.players || []).map(p => `${p.name} (${p.distance}m)`).join(', ') || 'none';
+  const hostiles = (state.nearbyHostiles || []).map(h => `${h.name} (${h.distance}m)`).join(', ') || 'none';
+  const chat = (state.recentChat || []).slice(-4).map(c => `${c.username}: ${c.message}`).join('<br>') || 'none';
+  const home = state.home ? `x${state.home.x} y${state.home.y} z${state.home.z} (${state.homeDistance ?? '?'}m)` : 'not set';
   el.innerHTML = `
-    <div>Health: <span class="text-nova-text">${state.health ?? '?'}/20</span> · Food: <span class="text-nova-text">${state.food ?? '?'}/20</span></div>
-    <div>Position: <span class="text-nova-text">x${pos.x ?? '?'} y${pos.y ?? '?'} z${pos.z ?? '?'}</span></div>
-    <div>Inventory: <span class="text-nova-text">${escHtml(inv)}</span></div>
-    <div>Nearby: <span class="text-nova-text">${escHtml((state.nearbyBlocks||[]).slice(0,8).join(', ') || 'none')}</span></div>`;
+    <div>❤️ Health <span class="text-nova-text">${state.health ?? '?'}/20</span> · 🍗 Food <span class="text-nova-text">${state.food ?? '?'}/20</span> · 🕓 ${escHtml(String(state.timeOfDay ?? '?'))}</div>
+    <div>📍 Position <span class="text-nova-text">x${pos.x ?? '?'} y${pos.y ?? '?'} z${pos.z ?? '?'}</span> · 🏠 Home ${escHtml(home)}</div>
+    <div>🎒 Inventory: <span class="text-nova-text">${escHtml(inv)}</span></div>
+    <div>🧱 Nearby: <span class="text-nova-text">${escHtml((state.nearbyBlocks||[]).slice(0,10).join(', ') || 'none')}</span></div>
+    <div>🧍 Players: <span class="text-nova-text">${escHtml(players)}</span></div>
+    <div>👹 Hostiles: <span class="${(state.nearbyHostiles||[]).length ? 'text-red-400':'text-nova-text'}">${escHtml(hostiles)}</span></div>
+    <div>💬 Chat: <span class="text-nova-text">${chat}</span></div>`;
 };
 
 const GAME_DRIVER_NOTES = {
