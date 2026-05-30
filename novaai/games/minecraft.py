@@ -26,7 +26,7 @@ _VERBS = [
     "follow", "come", "bring", "find_in_chests", "withdraw", "store", "drop",
     "find_ores", "mine", "collect", "gather", "craft", "place_table", "place", "place_at",
     "till", "plant", "harvest", "bonemeal", "plant_tree", "irrigate", "fill_bucket",
-    "set_home", "go_home",
+    "make_water_source", "set_home", "go_home",
     "smelt", "cook", "take_smelted", "explore", "find_village", "list_trades", "trade",
     "fish", "hunt", "breed", "upgrade_tools", "build_house",
     "attack", "punch", "defend", "retaliate", "equip", "equip_armor", "eat",
@@ -184,7 +184,8 @@ class MinecraftDriver:
             "{crop?,replant?} (auto-replants), bonemeal {radius?}, plant_tree "
             "{sapling,radius?}; chop trees with mine {name:'log'}. Crops NEED water "
             "within 4 blocks — use fill_bucket (at a lake) then irrigate to make a "
-            "water source.\n"
+            "water source. make_water_source {} digs a 2x2 hole and makes an INFINITE "
+            "water supply (needs 2 water buckets) you can refill from forever.\n"
             "- Home: set_home {} remembers your spot; go_home {} walks back to it; "
             "sleep {} in a bed at night (place a bed first if needed).\n"
             "- Smelting: smelt {input,fuel?,count?} (needs a furnace nearby; smelts "

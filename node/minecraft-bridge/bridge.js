@@ -631,6 +631,21 @@ async function ensureFarmWater() {
   }
 }
 
+// Place a water source into a dug-out cell (stand beside it and pour down).
+async function placeWaterAt(cellPos) {
+  const b = findInventory('water_bucket');
+  if (!b) return false;
+  try {
+    await bot.pathfinder.goto(new goals.GoalNear(cellPos.x, cellPos.y + 1, cellPos.z, 2));
+    await bot.equip(b, 'hand');
+    await bot.lookAt(cellPos.offset(0.5, 0.2, 0.5), true);
+    await bot.activateItem();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function equipBestWeapon() {
   const weapon = bot.inventory.items()
     .filter((i) => i.name.includes('sword') || i.name.includes('_axe'))
@@ -896,6 +911,43 @@ async function act(verb, args) {
         } catch (e) {
           return { ok: false, message: `couldn't fill: ${(e && e.message) || e}` };
         }
+      }
+
+      case 'make_water_source':
+      case 'infinite_water': {
+        // 2x2 infinite water: dig a 2x2 hole and pour 2 buckets in diagonally;
+        // all four cells become source blocks you can scoop forever.
+        const total = bot.inventory.items()
+          .filter((i) => i.name === 'water_bucket').reduce((s, i) => s + i.count, 0);
+        if (total < 2) {
+          return { ok: false, message: `need 2 water buckets (have ${total}); craft buckets (3 iron each) and fill_bucket` };
+        }
+        const base = bot.entity.position.floored();
+        const x0 = base.x; const z0 = base.z; const floorY = base.y - 1;
+        const offsets = [[1, 1], [1, 0], [0, 1], [2, 1], [1, 2], [-2, 0], [0, -2]];
+        let region = null;
+        for (const [ox, oz] of offsets) {
+          const cells = [[ox, oz], [ox + 1, oz], [ox, oz + 1], [ox + 1, oz + 1]]
+            .map(([dx, dz]) => new Vec3(x0 + dx, floorY, z0 + dz));
+          const ok = cells.every((c) => {
+            const fb = bot.blockAt(c);
+            const above = bot.blockAt(c.offset(0, 1, 0));
+            return fb && fb.boundingBox === 'block' && fb.name !== 'air'
+              && above && (above.name === 'air' || above.boundingBox === 'empty');
+          });
+          if (ok) { region = cells; break; }
+        }
+        if (!region) return { ok: false, message: 'no flat 2x2 spot nearby — clear/flatten some ground first' };
+        for (const c of region) {
+          try {
+            const blk = bot.blockAt(c);
+            try { if (bot.tool) await bot.tool.equipForBlock(blk, {}); } catch (e) { /* ignore */ }
+            await bot.dig(blk);
+          } catch (e) { /* skip */ }
+        }
+        await placeWaterAt(region[0]);   // two diagonal corners -> all 4 become sources
+        await placeWaterAt(region[3]);
+        return { ok: true, message: 'made a 2x2 infinite water source — scoop from it any time' };
       }
 
       case 'set_home': {
