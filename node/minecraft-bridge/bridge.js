@@ -57,6 +57,28 @@ let connected = false;
 let lastError = '';
 let reconnectTimer = null;
 let reconnectDelay = 5000;   // grows with backoff, resets on successful spawn
+let autoEating = false;
+let autoEatTimer = null;
+const AUTO_EAT_THRESHOLD = 17;   // eat to top up hunger so health regenerates
+
+function startAutoEat() {
+  if (autoEatTimer) return;
+  // Survival: automatically eat when hunger drops, so the bot heals (natural
+  // regen needs a near-full hunger bar) and doesn't starve — like a real player.
+  autoEatTimer = setInterval(async () => {
+    if (!bot || !connected || autoEating) return;
+    if (typeof bot.food !== 'number' || bot.food > AUTO_EAT_THRESHOLD) return;
+    const food = bot.inventory.items().find((i) => isFood(i.name));
+    if (!food) return;
+    autoEating = true;
+    try {
+      await bot.equip(food, 'hand');
+      await bot.consume();
+    } catch (e) { /* full / interrupted */ } finally {
+      autoEating = false;
+    }
+  }, 4000);
+}
 
 function log(msg) {
   // Printed to stdout; the Python driver forwards these lines to the UI.
@@ -139,6 +161,7 @@ function createBot() {
       bot.pathfinder.setMovements(new Movements(bot));
     } catch (e) { /* ignore */ }
     startViewer();
+    startAutoEat();
     log(`spawned as ${bot.username}${OWNER ? `, owner = ${OWNER}` : ''}`);
   });
 
@@ -433,6 +456,35 @@ async function comeTo(playerName) {
   if (!ent) return { ok: false, message: `can't see ${playerName || OWNER || 'that player'}` };
   await bot.pathfinder.goto(new goals.GoalNear(ent.position.x, ent.position.y, ent.position.z, 2));
   return { ok: true, message: `reached ${playerName || OWNER}` };
+}
+
+async function ensureCraftingTable() {
+  // Return a usable crafting table near the bot, placing/crafting one if needed.
+  let table = bot.findBlock({ matching: idsForNames(['crafting_table']), maxDistance: 6 });
+  if (table) return table;
+  let tableItem = findInventory('crafting_table');
+  if (!tableItem) {
+    // Try to craft a crafting table (2x2, no table needed) from planks.
+    const ct = bot.registry.itemsByName.crafting_table;
+    if (ct) {
+      const recs = bot.recipesFor(ct.id, null, 1, null);
+      if (recs.length) { try { await bot.craft(recs[0], 1, null); } catch (e) { /* ignore */ } }
+    }
+    tableItem = findInventory('crafting_table');
+  }
+  if (!tableItem) return null;
+  // Place it on an adjacent floor tile.
+  const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+  for (const [dx, dy, dz] of dirs) {
+    const spot = bot.entity.position.offset(dx, 0, dz);
+    const at = bot.blockAt(spot);
+    const below = bot.blockAt(spot.offset(0, -1, 0));
+    if (at && at.name === 'air' && below && below.boundingBox === 'block') {
+      try { await bot.equip(tableItem, 'hand'); await bot.placeBlock(below, new Vec3(0, 1, 0)); break; }
+      catch (e) { /* try next */ }
+    }
+  }
+  return bot.findBlock({ matching: idsForNames(['crafting_table']), maxDistance: 4 });
 }
 
 async function equipBestWeapon() {
@@ -997,13 +1049,58 @@ async function act(verb, args) {
         const name = String(args.name || args.item || '').toLowerCase();
         const item = bot.registry.itemsByName[name];
         if (!item) return { ok: false, message: `unknown item ${name}` };
-        const tableId = bot.registry.blocksByName.crafting_table
-          ? [bot.registry.blocksByName.crafting_table.id] : [];
-        const table = tableId.length ? bot.findBlock({ matching: tableId, maxDistance: 8 }) : null;
-        const recipes = bot.recipesFor(item.id, null, 1, table || null);
-        if (!recipes.length) return { ok: false, message: `no recipe for ${name} (need ingredients/table?)` };
-        await bot.craft(recipes[0], args.count || 1, table || null);
-        return { ok: true, message: `crafted ${name}` };
+        const want = Math.max(1, Number(args.count) || 1);
+        // 2x2 recipes (planks, sticks, table) need no bench; try that first.
+        let recipes = bot.recipesFor(item.id, null, want, null);
+        let table = null;
+        if (!recipes.length) {
+          table = await ensureCraftingTable();   // find / craft+place a bench
+          if (table) recipes = bot.recipesFor(item.id, null, want, table);
+        }
+        if (!recipes.length) {
+          return { ok: false, message: `can't craft ${name} — missing ingredients`
+            + (table ? '' : ' or a crafting table') };
+        }
+        try {
+          await bot.craft(recipes[0], want, table || null);
+          return { ok: true, message: `crafted ${want}x ${name}` };
+        } catch (e) {
+          return { ok: false, message: `craft failed: ${(e && e.message) || e}` };
+        }
+      }
+
+      case 'place_table': {
+        const table = await ensureCraftingTable();
+        return table
+          ? { ok: true, message: 'crafting table ready' }
+          : { ok: false, message: 'no crafting table and no planks to make one' };
+      }
+
+      case 'gather': {
+        // Mine several of a block type from the area (bounded so it fits a tick).
+        const name = String(args.name || args.block || '').toLowerCase();
+        if (!name) return { ok: false, message: 'need a block name' };
+        const want = Math.max(1, Math.min(16, Number(args.count) || 4));
+        const ids = [];
+        for (const key in bot.registry.blocksByName) {
+          if (key.includes(name)) ids.push(bot.registry.blocksByName[key].id);
+        }
+        if (!ids.length) return { ok: false, message: `unknown block ${name}` };
+        let got = 0;
+        const start = Date.now();
+        while (got < want && Date.now() - start < 15000) {
+          const found = bot.findBlock({ matching: ids, maxDistance: 48 });
+          if (!found) break;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(found.position.x, found.position.y, found.position.z, 1));
+            const block = bot.blockAt(found.position) || found;
+            try { if (bot.tool) await bot.tool.equipForBlock(block, {}); } catch (e) { /* ignore */ }
+            if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block)) break;
+            await bot.dig(block);
+            got++;
+          } catch (e) { break; }
+        }
+        return { ok: got > 0, message: got ? `gathered ${got} ${name}` : `couldn't gather ${name}` };
       }
 
       case 'place': {

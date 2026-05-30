@@ -24,7 +24,7 @@ BRIDGE_DIR = ROOT_DIR / "node" / "minecraft-bridge"
 
 _VERBS = [
     "follow", "come", "bring", "find_in_chests", "withdraw", "store", "drop",
-    "find_ores", "mine", "collect", "craft", "place", "place_at",
+    "find_ores", "mine", "collect", "gather", "craft", "place_table", "place", "place_at",
     "till", "plant", "harvest", "bonemeal", "plant_tree",
     "smelt", "take_smelted", "explore", "find_village", "list_trades", "trade",
     "attack", "punch", "defend", "equip", "equip_armor", "eat",
@@ -180,7 +180,12 @@ class MinecraftDriver:
             "- Explore & villages: explore {distance?,direction?} to travel and load "
             "new land; find_village {} to spot villagers/bells; list_trades {} to read "
             "a nearby villager's trades; trade {index} or {item:'emerald'} to trade.\n"
-            "- equip {name,where?}; equip_armor {}; eat {}.\n"
+            "- Gather & craft your own gear: gather {name,count?} mines several "
+            "blocks; craft {item,count?} auto-makes/places a crafting table if needed "
+            "(e.g. craft planks -> sticks -> wooden_pickaxe -> stone tools). "
+            "place_table {} sets up a bench.\n"
+            "- Survival: you auto-eat when hungry (keeps you healed), but you can also "
+            "eat {} on demand; equip {name,where?}; equip_armor {}.\n"
             "- follow/come {player?} (defaults to owner); bring {name,count?}; "
             "find_in_chests {name}; withdraw {name,count?}; store {name,count?}; drop {name,count?}.\n"
             "- goto {x,z,y?}; sleep {}; wake {}; say {text}; wait {}; stop {}."
