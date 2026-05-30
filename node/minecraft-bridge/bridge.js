@@ -96,8 +96,8 @@ function startViewer() {
   try {
     ({ mineflayer: mineflayerViewer } = require('prismarine-viewer'));
   } catch (e) {
-    log('Live view unavailable: prismarine-viewer not installed. '
-      + 'Run `npm install` in node/minecraft-bridge to enable it.');
+    log('Live view unavailable (' + ((e && e.message) || e) + '). '
+      + 'Run `npm install` in node/minecraft-bridge (it needs prismarine-viewer + canvas).');
     return;
   }
   try {
