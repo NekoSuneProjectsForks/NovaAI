@@ -1449,6 +1449,7 @@ class Api:
         # Drop the reference first so status flips to stopped immediately; the
         # daemon thread unwinds on its own (stop() also aborts the bridge).
         self.game_agent = None
+        self.game_driver_key = None
         if agent:
             try:
                 agent.stop()
