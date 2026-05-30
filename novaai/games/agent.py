@@ -100,12 +100,36 @@ def _extract_mindcraft(reply: str) -> dict[str, Any] | None:
     def cmd(verb, args=None):
         return {"thought": thought, "verb": verb, "args": args or {}}
 
-    if name in ("followplayer", "gotoplayer", "goto_player"):
+    if name in ("followplayer",):
         return cmd("follow", {"player": a[0]} if a else {})
-    if name in ("comehere", "come"):
+    if name in ("gotoplayer", "goto_player", "comehere", "come"):
         return cmd("come", {"player": a[0]} if a else {})
+    if name in ("giveplayer", "givetoplayer", "give", "tossto", "dropto"):
+        # !givePlayer("player", "item", count)
+        out = {}
+        if a:
+            out["player"] = a[0]
+            if len(a) > 1:
+                out["name"] = a[1]
+            if len(a) > 2 and a[2].isdigit():
+                out["count"] = int(a[2])
+        return cmd("bring", out)
     if name in ("searchforblock", "collectblock", "collectblocks", "minepblock", "mineblock", "collect"):
-        return cmd("mine", {"name": a[0]} if a else {})
+        out = {}
+        if a:
+            out["name"] = a[0]
+            if len(a) > 1 and a[1].isdigit() and int(a[1]) > 1:
+                return {"thought": thought, "verb": "gather", "args": {"name": a[0], "count": int(a[1])}}
+        return cmd("mine", out)
+    if name in ("setmode", "mode", "setgoal", "goal"):
+        # Mindcraft mode toggles (only meaningful when turned ON). Combat/eat are
+        # automatic here, so map combat modes to a defend sweep and otherwise
+        # no-op so the bot doesn't spin re-issuing them.
+        on = not (len(a) > 1 and str(a[1]).lower() in ("false", "0", "off", "no"))
+        mode = (a[0].lower() if a else "")
+        if on and ("defen" in mode or "hunt" in mode or "combat" in mode or "fight" in mode):
+            return cmd("defend", {"seconds": 4})
+        return cmd("wait")
     if name in ("searchforentity", "huntentity"):
         return cmd("hunt", {"animal": a[0]} if a else {})
     if name in ("attack", "attackplayer", "attackentity", "defend"):
@@ -120,6 +144,14 @@ def _extract_mindcraft(reply: str) -> dict[str, Any] | None:
         return cmd("eat")
     if name in ("smeltitem", "smelt"):
         return cmd("smelt", {"input": a[0]} if a else {})
+    if name in ("cook",):
+        return cmd("cook", {"food": a[0]} if a else {})
+    if name in ("activate", "useitem", "fish", "fishing"):
+        return cmd("fish")
+    if name in ("findvillage", "findvillager", "findvillagers"):
+        return cmd("find_village")
+    if name in ("trade", "tradewith"):
+        return cmd("trade", {"item": a[0]} if a else {})
     if name in ("gotocoordinate", "gotoxz", "navigateto"):
         if len(a) >= 2:
             try:
