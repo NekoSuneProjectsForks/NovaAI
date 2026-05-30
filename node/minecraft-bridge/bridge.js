@@ -22,6 +22,23 @@
 
 const { createBot } = require('./lib/bot');
 const { startApiServer } = require('./lib/server');
+const { state, log } = require('./lib/state');
+
+// Crash guards: a stray error from mineflayer/pathfinder/a plugin must not kill
+// the whole bridge. Log it and keep running; if the bot died, schedule a
+// reconnect so it recovers on its own.
+function softRecover(kind, err) {
+  log(`${kind}: ${(err && err.stack) || (err && err.message) || err}`);
+  try {
+    if (!state.connected && !state.reconnectTimer) {
+      // Lazy require to avoid a cycle at load time.
+      require('./lib/bot').scheduleReconnect(kind);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+process.on('uncaughtException', (err) => softRecover('uncaughtException', err));
+process.on('unhandledRejection', (err) => softRecover('unhandledRejection', err));
 
 createBot();
 startApiServer();

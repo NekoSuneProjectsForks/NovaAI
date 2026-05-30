@@ -101,4 +101,4 @@ function createBot() {
   });
 }
 
-module.exports = { createBot };
+module.exports = { createBot, scheduleReconnect };

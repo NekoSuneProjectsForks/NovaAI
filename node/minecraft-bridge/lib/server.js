@@ -61,6 +61,10 @@ function startApiServer() {
     sendJson(res, 404, { ok: false, message: 'not found' });
   });
 
+  server.on('error', (e) => {
+    log('API server error: ' + ((e && e.message) || e)
+      + (e && e.code === 'EADDRINUSE' ? ` (port ${CFG.bridgePort} already in use)` : ''));
+  });
   server.listen(CFG.bridgePort, '127.0.0.1', () => {
     log(`listening on 127.0.0.1:${CFG.bridgePort}, connecting to ${CFG.host}:${CFG.port} (auth=${CFG.auth})`);
   });
