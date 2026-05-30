@@ -149,11 +149,24 @@ class MinecraftDriver:
     def describe_state(self) -> str:
         return self.observe().text
 
-    # Verbs that legitimately take a long time (many block placements, etc.).
-    _LONG_VERBS = {"build_house", "build"}
+    # Building places many blocks; movement/gather verbs walk/pathfind and can
+    # take a while — give both generous HTTP timeouts so we don't give up while
+    # the bridge is still working.
+    _BUILD_VERBS = {"build_house", "build"}
+    _LONG_VERBS = {
+        "explore", "goto", "go_home", "mine", "collect", "gather", "follow", "come",
+        "bring", "hunt", "fish", "plant", "harvest", "till", "bonemeal", "plant_tree",
+        "smelt", "take_smelted", "find_in_chests", "withdraw", "store", "make_water_source",
+        "irrigate", "fill_bucket", "place_at",
+    }
 
     def act(self, command: GameCommand) -> dict[str, Any]:
-        timeout = 220 if command.verb in self._LONG_VERBS else self.config.game_tick_seconds + 20
+        if command.verb in self._BUILD_VERBS:
+            timeout = 220
+        elif command.verb in self._LONG_VERBS:
+            timeout = 120
+        else:
+            timeout = max(30, int(self.config.game_tick_seconds) + 20)
         try:
             resp = requests.post(
                 self.base_url + "/act",

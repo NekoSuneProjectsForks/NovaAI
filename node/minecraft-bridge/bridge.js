@@ -1175,7 +1175,7 @@ async function act(verb, args) {
 
       // ── exploring / villages / trading ─────────────────────────────────────
       case 'explore': {
-        const dist = Math.max(8, Math.min(128, Number(args.distance) || 48));
+        const dist = Math.max(8, Math.min(64, Number(args.distance) || 24));
         const pos = bot.entity.position;
         let dx; let dz;
         const dir = String(args.direction || '').toLowerCase();
