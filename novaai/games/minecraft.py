@@ -171,7 +171,8 @@ class MinecraftDriver:
 
     def verbs_help(self) -> str:
         return (
-            "How to use verbs (args go in 'args'):\n"
+            "How to use verbs (ALWAYS put the target in args, e.g. "
+            '{"verb":"mine","args":{"name":"oak_log"}} — never leave args empty):\n'
             "- find_ores {name?, exposed?}: returns visible ore coords. PREFER this, "
             "then mine {x,y,z} the result — legit, no x-ray (only ores you can see).\n"
             "- mine/collect {name} OR {x,y,z}; place {name} (under you); "

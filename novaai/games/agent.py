@@ -17,6 +17,34 @@ from ..config import Config
 from ..engine import GenerationRequest, detect_emotion, generate_reply
 from .base import GameCommand, GameDriver
 
+# Verbs that need a subject (item/block) in their args.
+_NAME_VERBS = {
+    "mine", "collect", "gather", "bring", "store", "deposit", "find_in_chests",
+    "withdraw", "drop", "craft", "place", "place_at", "smelt", "cook", "equip",
+    "plant", "plant_tree", "find_ores",
+}
+# Map everyday words in a goal to a concrete Minecraft name the bridge can find.
+_SUBJECT_ALIASES = {
+    "wood": "oak_log", "wooden": "oak_log", "logs": "log", "log": "log", "timber": "log",
+    "plank": "planks", "stick": "stick", "cobble": "cobblestone", "cobblestone": "cobblestone",
+    "stone": "stone", "diamond": "diamond", "iron": "iron", "gold": "gold",
+    "coal": "coal", "redstone": "redstone", "copper": "copper", "lapis": "lapis",
+    "emerald": "emerald", "dirt": "dirt", "sand": "sand", "gravel": "gravel",
+    "wheat": "wheat", "carrot": "carrot", "potato": "potato", "food": "beef",
+    "wool": "wool", "glass": "glass", "water": "water", "bucket": "bucket",
+    "pickaxe": "pickaxe", "axe": "axe", "sword": "sword", "shovel": "shovel",
+    "armor": "armor", "torch": "torch", "bed": "bed",
+}
+
+
+def _infer_subject(goal: str) -> str | None:
+    g = f" {(goal or '').lower()} "
+    for word, mapped in _SUBJECT_ALIASES.items():
+        if f"{word}" in g:
+            return mapped
+    return None
+
+
 def _extract_command(reply: str) -> dict[str, Any] | None:
     """Best-effort parse of the model's JSON action (tolerant of fences/prose)."""
     if not reply:
@@ -197,6 +225,15 @@ class GameAgent:
         # broken pathfinder/version doesn't leave it frozen).
         if not verb or verb not in verbs:
             verb, args = ("wander", {"seconds": 2}) if "wander" in verbs else ("look", {})
+
+        # If a subject-needing verb came with no item/block, infer it from the
+        # goal so "I need wood" -> mine {name: oak_log} instead of failing.
+        if verb in _NAME_VERBS and not any(
+            args.get(k) for k in ("name", "item", "block", "seed", "sapling", "input")
+        ):
+            subject = _infer_subject(self.goal)
+            if subject:
+                args = {**args, "name": subject}
 
         outcome = self.driver.act(GameCommand(verb=verb, args=args))
         outcome_text = str(outcome.get("message", outcome))

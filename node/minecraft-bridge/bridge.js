@@ -294,8 +294,15 @@ function isFood(name) {
   return FOODS.some((f) => name.includes(f));
 }
 
+// Map everyday words to in-game names so "wood" finds logs, etc.
+const NAME_ALIASES = { wood: 'log', wooden: 'log', timber: 'log', cobble: 'cobblestone' };
+function aliasName(name) {
+  const n = String(name || '').toLowerCase().trim();
+  return NAME_ALIASES[n] || n;
+}
+
 function resolveItem(name) {
-  const want = String(name || '').toLowerCase();
+  const want = aliasName(name);
   if (!want) return null;
   if (bot.registry.itemsByName[want]) return bot.registry.itemsByName[want];
   for (const key in bot.registry.itemsByName) {
@@ -1318,7 +1325,7 @@ async function act(verb, args) {
           block = bot.blockAt(pos);
           if (!block || block.name === 'air') return { ok: false, message: 'nothing to mine there' };
         } else {
-          const name = String(args.name || args.block || '').toLowerCase();
+          const name = aliasName(args.name || args.block);
           if (!name) return { ok: false, message: 'need a block name or coordinates' };
           const ids = [];
           for (const key in bot.registry.blocksByName) {
