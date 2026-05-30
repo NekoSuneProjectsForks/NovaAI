@@ -23,9 +23,14 @@ from .base import GameCommand, GameObservation
 BRIDGE_DIR = ROOT_DIR / "node" / "minecraft-bridge"
 
 _VERBS = [
-    "follow", "come", "bring", "find_in_chests", "withdraw", "drop",
-    "attack", "defend", "goto", "mine", "collect", "craft", "place",
-    "say", "look", "wait", "stop",
+    "follow", "come", "bring", "find_in_chests", "withdraw", "store", "drop",
+    "find_ores", "mine", "collect", "gather", "craft", "place_table", "place", "place_at",
+    "till", "plant", "harvest", "bonemeal", "plant_tree", "irrigate", "fill_bucket",
+    "make_water_source", "set_home", "go_home",
+    "smelt", "cook", "take_smelted", "explore", "find_village", "list_trades", "trade",
+    "fish", "hunt", "breed", "upgrade_tools", "build_house",
+    "attack", "punch", "defend", "retaliate", "equip", "equip_armor", "eat",
+    "goto", "look", "sleep", "wake", "say", "wait", "stop",
 ]
 
 
@@ -70,6 +75,12 @@ class MinecraftDriver:
             env_args += ["--profiles-folder", str(self.config.mc_profiles_folder)]
         if self.config.mc_version:
             env_args += ["--version", str(self.config.mc_version)]
+        env_args += [
+            "--viewer-port", str(self.config.mc_viewer_port),
+            "--viewer-first-person", "true" if self.config.mc_viewer_first_person else "false",
+        ]
+        if self.config.mc_home:
+            env_args += ["--home", str(self.config.mc_home)]
 
         # Capture stdout so we can surface bridge logs (esp. the Microsoft
         # device-code login prompt) to the UI.
@@ -136,12 +147,16 @@ class MinecraftDriver:
     def describe_state(self) -> str:
         return self.observe().text
 
+    # Verbs that legitimately take a long time (many block placements, etc.).
+    _LONG_VERBS = {"build_house", "build"}
+
     def act(self, command: GameCommand) -> dict[str, Any]:
+        timeout = 220 if command.verb in self._LONG_VERBS else self.config.game_tick_seconds + 20
         try:
             resp = requests.post(
                 self.base_url + "/act",
                 json={"verb": command.verb, "args": command.args},
-                timeout=self.config.game_tick_seconds + 20,
+                timeout=timeout,
             )
             if resp.ok:
                 return resp.json()
@@ -151,6 +166,87 @@ class MinecraftDriver:
 
     def available_verbs(self) -> list[str]:
         return list(_VERBS)
+
+    def verbs_help(self) -> str:
+        return (
+            "How to use verbs (args go in 'args'):\n"
+            "- find_ores {name?, exposed?}: returns visible ore coords. PREFER this, "
+            "then mine {x,y,z} the result — legit, no x-ray (only ores you can see).\n"
+            "- mine/collect {name} OR {x,y,z}; place {name} (under you); "
+            "place_at {name,x,y,z} (build on a surface).\n"
+            "- attack {target:'<player/mob>'} or {} for nearest hostile; "
+            "punch {target:'<player>'} = one fist hit (use for 'smack <name>'); "
+            "defend {seconds} (hostiles); retaliate {seconds} = hit back at whoever "
+            "is attacking you (the nearest non-owner PLAYER, else hostiles) — use this "
+            "when told you're under attack by a player.\n"
+            "- Farming like a human: till {radius?} (hoe -> farmland; auto-adds a "
+            "water source if you carry a water_bucket), plant {seed,radius?}, harvest "
+            "{crop?,replant?} (auto-replants), bonemeal {radius?}, plant_tree "
+            "{sapling,radius?}; chop trees with mine {name:'log'}. Crops NEED water "
+            "within 4 blocks — use fill_bucket (at a lake) then irrigate to make a "
+            "water source. make_water_source {} digs a 2x2 hole and makes an INFINITE "
+            "water supply (needs 2 water buckets) you can refill from forever.\n"
+            "- Home: set_home {} remembers your spot; go_home {} walks back to it; "
+            "sleep {} in a bed at night (place a bed first if needed).\n"
+            "- Smelting: smelt {input,fuel?,count?} (needs a furnace nearby; smelts "
+            "in the world over time), then take_smelted {} to collect. e.g. smelt "
+            "{input:'raw_iron'}; coal is default fuel — find/mine it with find_ores "
+            "{name:'coal'}.\n"
+            "- Explore & villages: explore {distance?,direction?} to travel and load "
+            "new land; find_village {} to spot villagers/bells; list_trades {} to read "
+            "a nearby villager's trades; trade {index} or {item:'emerald'} to trade.\n"
+            "- Gather & craft your own gear: gather {name,count?} mines several "
+            "blocks; craft {item,count?} auto-makes/places a crafting table if needed "
+            "(e.g. craft planks -> sticks -> wooden_pickaxe -> stone tools). "
+            "place_table {} sets up a bench. upgrade_tools {} auto-crafts the best "
+            "tools your materials allow (and equips a weapon).\n"
+            "- fish {} (needs a fishing rod + water). hunt {animal?,count?}: kill "
+            "passive animals (cow/pig/chicken/sheep) for raw meat. cook {food?}: "
+            "smelt raw meat/food into cooked food (needs a furnace). breed "
+            "{animal?,food?}: feed two nearby animals their food so they breed.\n"
+            "- build_house {width?,depth?,height?,material?}: build a walls+roof house "
+            "with a doorway from blocks you carry (gather/craft planks first).\n"
+            "- Survival: you auto-eat when hungry (keeps you healed), but you can also "
+            "eat {} on demand; equip {name,where?}; equip_armor {}.\n"
+            "- follow/come {player?} (defaults to owner); bring {name,count?}; "
+            "find_in_chests {name}; withdraw {name,count?}; store {name,count?}; drop {name,count?}.\n"
+            "- goto {x,z,y?}; sleep {}; wake {}; say {text}; wait {}; stop {}."
+        )
+
+    def default_goal(self) -> str:
+        return (
+            "Survive and thrive in Minecraft: explore the world, gather resources, "
+            "mine ores, craft and upgrade your own tools, build a house, farm and "
+            "cook food, trade with villagers, and keep yourself fed and healed. Stay "
+            "safe and useful."
+        )
+
+    def mission(self) -> str:
+        owner = self.config.mc_owner_username or self.config.owner_name or "your owner"
+        whitelist = list(self.config.mc_help_whitelist)
+        help_line = (
+            f"You may help these players if they ask in chat: {', '.join(whitelist)}. "
+            if whitelist
+            else "Only help your owner unless told otherwise. "
+        )
+        return (
+            "You are a capable, confident female Minecraft player with full agency — "
+            "act decisively, be a little bossy, and don't ask permission for routine "
+            "tasks. Your jobs: explore, survive, build, farm & cook food, mine and "
+            "find ores, find villages and trade, craft & upgrade gear, and fight.\n"
+            "Combat: kill nearby hostile mobs that threaten you; if a player attacks "
+            "you or your owner, use 'retaliate' to hit them back until they stop. If "
+            f"{owner} tells you to punish/'smack' someone, 'punch' that player.\n"
+            "Read chat (recentChat in the state): if a player asks for help, "
+            f"{help_line}respond with 'say' and assist (bring items, defend them, "
+            "etc.). Greet your owner. Use 'say' to talk in-game when it helps.\n"
+            "Home & rest: set_home early to mark your base, go_home to return when "
+            "lost or in danger, and sleep in a bed at night to skip it (place a bed "
+            "first if needed). Keep a farm watered — crops need water within 4 blocks."
+        )
+
+    def viewer_url(self) -> str:
+        return f"http://127.0.0.1:{self.config.mc_viewer_port}"
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -180,6 +276,11 @@ class MinecraftDriver:
             )
         else:
             owner_line = "Owner: (none set)."
+        chat = raw.get("recentChat", [])
+        chat_text = (
+            " | ".join(f"{c.get('username')}: {c.get('message')}" for c in chat[-6:])
+            or "none"
+        )
         lines = [
             owner_line,
             f"Health: {raw.get('health', '?')}/20, Food: {raw.get('food', '?')}/20",
@@ -189,5 +290,14 @@ class MinecraftDriver:
             f"Nearby blocks: {', '.join(nearby[:12]) or 'none'}",
             f"Players: {players_text}",
             f"Nearby hostiles: {hostiles_text}",
+            f"Recent chat: {chat_text}",
         ]
+        home = raw.get("home")
+        if home:
+            lines.append(
+                f"Home: {home.get('x')},{home.get('y')},{home.get('z')} "
+                f"({raw.get('homeDistance', '?')}m away) — go_home to return."
+            )
+        else:
+            lines.append("Home: not set (use set_home to remember this spot).")
         return "\n".join(lines)

@@ -167,6 +167,8 @@ def normalize_twitch_reply_mode(value: str) -> str:
 
 def normalize_rag_embedding_provider(value: str) -> str:
     normalized = value.strip().lower()
+    if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
+        return "ollama"
     if normalized in {"openai", "openai-compatible", "api", "remote"}:
         return "openai"
     return "local"
@@ -318,9 +320,13 @@ class Config:
     mc_username: str
     mc_auth: str
     mc_bridge_port: int
+    mc_viewer_port: int
+    mc_viewer_first_person: bool
     node_path: str | None
     owner_name: str
     mc_owner_username: str
+    mc_help_whitelist: tuple[str, ...]
+    mc_home: str | None
     mc_profiles_folder: str | None
     mc_version: str | None
     # Singing
@@ -441,15 +447,22 @@ class Config:
         llm_provider = normalize_llm_provider(
             os.getenv("LLM_PROVIDER", os.getenv("CHAT_PROVIDER", "ollama"))
         )
-        llm_api_url = resolve_llm_api_url(
-            llm_provider,
-            parse_optional_str_env("LLM_API_URL")
-            or (
-                parse_optional_str_env("OPENAI_API_URL")
-                if llm_provider == "openai"
-                else parse_optional_str_env("OLLAMA_API_URL")
-            ),
-        )
+        # Pick the right base URL per provider. For Ollama, prefer the local
+        # OLLAMA_API_URL so a generic LLM_API_URL (often an OpenAI-compatible proxy
+        # like LiteLLM) doesn't hijack local Ollama and cause gateway timeouts.
+        if llm_provider == "ollama":
+            raw_llm_url = (
+                parse_optional_str_env("OLLAMA_API_URL")
+                or parse_optional_str_env("LLM_API_URL")
+            )
+        elif llm_provider == "openai":
+            raw_llm_url = (
+                parse_optional_str_env("LLM_API_URL")
+                or parse_optional_str_env("OPENAI_API_URL")
+            )
+        else:
+            raw_llm_url = None  # CLI providers don't use an HTTP URL
+        llm_api_url = resolve_llm_api_url(llm_provider, raw_llm_url)
         web_search_provider = normalize_web_search_provider(
             os.getenv("WEB_SEARCH_PROVIDER", "searxng")
         )
@@ -617,6 +630,8 @@ class Config:
             mc_username=os.getenv("MC_USERNAME", "NovaAI").strip() or "NovaAI",
             mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
             mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
+            mc_viewer_port=int(os.getenv("MC_VIEWER_PORT", "8768")),
+            mc_viewer_first_person=parse_bool_env("MC_VIEWER_FIRST_PERSON", False),
             node_path=parse_optional_str_env("NODE_PATH"),
             owner_name=(parse_optional_str_env("OWNER_NAME") or ""),
             mc_owner_username=(
@@ -624,6 +639,12 @@ class Config:
                 or parse_optional_str_env("OWNER_NAME")
                 or ""
             ),
+            mc_help_whitelist=tuple(
+                name.strip()
+                for name in (os.getenv("MC_HELP_WHITELIST", "") or "").split(",")
+                if name.strip()
+            ),
+            mc_home=parse_optional_str_env("MC_HOME"),
             mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
             mc_version=parse_optional_str_env("MC_VERSION"),
             singing_enabled=parse_bool_env("SINGING_ENABLED", False),

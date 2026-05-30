@@ -384,6 +384,18 @@ class Api:
             self._push_status("Stopped.")
             return "Stopped."
 
+        # Game command — if a game agent is running, route in-game orders to it
+        # (combat, build, mine, follow, etc.) instead of just chatting about them.
+        game_reply = self._maybe_handle_game_command(user_text)
+        if game_reply is not None:
+            append_history("user", user_text)
+            append_history("assistant", game_reply)
+            self._push_chat(companion, game_reply, "assistant")
+            if self.state.voice_enabled and not self._stopped():
+                self._speak(game_reply, "neutral")
+            self._push_status("Ready.")
+            return "Game command handled."
+
         # Web context
         web_context: str | None = None
         if self.config.web_browsing_enabled:
@@ -422,7 +434,7 @@ class Api:
                 config=self.config,
                 source="chat",
                 web_context=web_context,
-                extra_system=self._recall(user_text),
+                extra_system=self._game_awareness() + self._recall(user_text),
             )
         )
         reply = result.reply
@@ -844,13 +856,90 @@ class Api:
             except Exception:
                 pass
 
+    def _game_running(self) -> bool:
+        return bool(self.game_agent and self.game_agent.is_running())
+
+    def _game_awareness(self) -> list[str]:
+        """Tell the chat persona it currently controls an in-game body."""
+        if not self._game_running():
+            return []
+        driver = getattr(self.game_agent, "driver", None)
+        game = getattr(driver, "name", "a game")
+        return [
+            f"You are RIGHT NOW controlling a character in {game} — you CAN move, "
+            "fight, mine, build, eat, and act in the world through your game body. "
+            "Never say you have no controls or can't fight/move. If the user tells you "
+            "to do something in-game (fight back, defend, build, mine, follow, come, "
+            "etc.), confirm you're doing it; the action is carried out by your game agent."
+        ]
+
+    # Phrases that mean "do this with your in-game body".
+    _COMBAT_TRIGGERS = (
+        "under attack", "being attacked", "attacked by", "attacking you", "attacking us",
+        "fight back", "hit them", "hit him", "hit her", "hit back", "smack",
+        "defend", "protect me", "protect us", "kill them", "kill him", "kill her",
+        "punch", "they're hitting", "stop them", "fend them", "fight them",
+    )
+    _COMMAND_TRIGGERS = (
+        "build", "mine", "dig", "chop", "gather", "farm", "plant", "harvest",
+        "follow me", "come here", "come to me", "bring me", "find", "explore",
+        "craft", "smelt", "cook", "fish", "hunt", "breed", "store", "go to",
+        "make a", "make me", "place", "trade", "sleep", "equip", "collect", "kill",
+        "attack",
+    )
+
+    def _maybe_handle_game_command(self, user_text: str) -> str | None:
+        if not self._game_running():
+            return None
+        lower = f" {user_text.lower().strip()} "
+        # Punish a named player -> punch them (pass the literal order so the agent
+        # punches the right target).
+        if "smack" in lower or "punch" in lower:
+            self.game_agent.set_goal(user_text.strip())
+            return f"On it — {user_text.strip()} 😤"
+        if any(k in lower for k in self._COMBAT_TRIGGERS):
+            self.game_agent.set_goal(
+                "You are under attack by a player or mob. FIGHT BACK now: equip your "
+                "best weapon and armor, then use the 'retaliate' verb to hit the "
+                "attacker (nearest non-owner player, else hostiles) repeatedly until "
+                "they stop. Eat to heal if low, and stay alive. Keep retaliating."
+            )
+            return "On it — fighting back! Equipping a weapon and hitting them until they stop."
+        if any(k in lower for k in self._COMMAND_TRIGGERS):
+            self.game_agent.set_goal(user_text.strip())
+            return f"Got it — doing that in-game now: {user_text.strip()}"
+        return None
+
     def get_game_status(self) -> dict[str, Any]:
         running = bool(self.game_agent and self.game_agent.is_running())
+        viewer_url = ""
+        driver = self.config.game_driver if self.config else "minecraft"
+        if running and self.game_agent is not None:
+            drv = getattr(self.game_agent, "driver", None)
+            if drv is not None and hasattr(drv, "viewer_url"):
+                try:
+                    viewer_url = drv.viewer_url()
+                except Exception:
+                    viewer_url = ""
         return {
             "running": running,
-            "driver": self.config.game_driver if self.config else "minecraft",
+            "driver": driver,
             "goal": self.game_agent.goal if self.game_agent else "",
+            "viewer_url": viewer_url,
         }
+
+    def open_game_view(self) -> dict[str, Any]:
+        status = self.get_game_status()
+        url = status.get("viewer_url")
+        if not url:
+            return {"ok": False, "msg": "Live view is only available while a Minecraft game is running."}
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return {"ok": True, "url": url}
 
     def _build_game_driver(self, driver_name: str):
         if driver_name == "minecraft":
@@ -898,6 +987,12 @@ class Api:
                     "system",
                 )
 
+            default_goal = "explore and survive"
+            if hasattr(game_driver, "default_goal"):
+                try:
+                    default_goal = game_driver.default_goal()
+                except Exception:
+                    pass
             self.game_agent = GameAgent(
                 driver=game_driver,
                 config=self.config,
@@ -906,7 +1001,7 @@ class Api:
                 on_update=self._game_update,
                 remember=self._game_remember,
                 tick_seconds=self.config.game_tick_seconds,
-                goal=(goal.strip() or "explore and survive"),
+                goal=(goal.strip() or default_goal),
             )
             self.game_agent.start()
             return {"ok": True, "msg": "Game agent started."}
@@ -915,12 +1010,17 @@ class Api:
             return {"ok": False, "msg": str(exc)}
 
     def stop_game(self) -> dict[str, Any]:
-        if self.game_agent:
+        agent = self.game_agent
+        # Drop the reference first so status flips to stopped immediately; the
+        # daemon thread unwinds on its own (stop() also aborts the bridge).
+        self.game_agent = None
+        if agent:
             try:
-                self.game_agent.stop()
+                agent.stop()
             except Exception:
                 pass
-        return {"ok": True, "msg": "Game agent stopping."}
+        self._avatar_dance(False)
+        return {"ok": True, "msg": "Game agent stopped."}
 
     def set_game_goal(self, goal: str) -> dict[str, Any]:
         if not self.game_agent:

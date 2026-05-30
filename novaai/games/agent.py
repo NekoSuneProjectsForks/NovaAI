@@ -54,6 +54,7 @@ class GameAgent:
         self.goal = goal
 
         self._stop = threading.Event()
+        self._wake = threading.Event()  # fire a tick immediately (e.g. new order)
         self._thread: threading.Thread | None = None
         self._log: list[dict[str, str]] = []  # short rolling game history
 
@@ -68,12 +69,21 @@ class GameAgent:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
+        # Abort any in-flight action immediately (e.g. a long pathfinder move):
+        # stopping the driver makes the current observe/act call fail fast so the
+        # loop unwinds instead of blocking until the action finishes.
+        try:
+            self.driver.stop()
+        except Exception:
+            pass
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
     def set_goal(self, goal: str) -> None:
         self.goal = goal.strip() or self.goal
+        self._wake.set()  # act on the new order right away
 
     # ── loop ──────────────────────────────────────────────────────────────────
 
@@ -90,7 +100,9 @@ class GameAgent:
                 self._tick()
             except Exception as exc:
                 self.narrate(f"Something went wrong: {exc}", "anxious")
-            self._stop.wait(self.tick_seconds)
+            # Wait for the next tick, but wake instantly on a new order / stop.
+            self._wake.wait(self.tick_seconds)
+            self._wake.clear()
 
         try:
             self.driver.stop()
@@ -99,19 +111,36 @@ class GameAgent:
         self.narrate("Okay, I'm done playing for now.", "neutral")
 
     def _tick(self) -> None:
+        if self._stop.is_set():
+            return
         obs = self.driver.observe()
         try:
             self.on_update(obs.raw)
         except Exception:
             pass
+        if self._stop.is_set():
+            return
 
         verbs = self.driver.available_verbs()
+
+        def _driver_text(method: str) -> str:
+            if hasattr(self.driver, method):
+                try:
+                    return self.driver.__getattribute__(method)() or ""
+                except Exception:
+                    return ""
+            return ""
+
+        mission = _driver_text("mission")
+        verbs_help = _driver_text("verbs_help")
         framing = (
             f"You are autonomously playing {self.driver.name}. Think out loud briefly in "
             "first person, then choose ONE action. Respond ONLY with JSON of the form "
             '{"thought": "<one or two in-character sentences>", "verb": "<one verb>", '
             '"args": {<key: value>}}. '
-            f"Allowed verbs: {', '.join(verbs)}."
+            + (f"\n{mission}" if mission else "")
+            + f"\nAllowed verbs: {', '.join(verbs)}."
+            + (f"\n{verbs_help}" if verbs_help else "")
         )
         user_prompt = (
             f"Goal: {self.goal}\n\nCurrent world state:\n{obs.text}\n\n"
@@ -127,8 +156,14 @@ class GameAgent:
                 extra_system=[framing],
                 use_shared_history=False,
                 history=list(self._log),
+                # Game replies are short JSON; cap tokens so local models (Ollama)
+                # respond fast and don't time out each tick.
+                max_tokens=256,
             )
         )
+
+        if self._stop.is_set():
+            return
 
         command = _extract_command(result.reply)
         if not command:

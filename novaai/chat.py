@@ -405,12 +405,13 @@ def _request_openai_compatible_reply(
     config: Config,
     messages: list[dict[str, str]],
     web_context: str | None,
+    max_tokens: int | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
-        "max_tokens": config.llm_num_predict,
+        "max_tokens": max_tokens or config.llm_num_predict,
     }
     headers = {"Content-Type": "application/json"}
     if config.llm_api_key:
@@ -603,6 +604,7 @@ def request_reply(
     extra_system: list[str] | None = None,
     history: list[dict[str, str]] | None = None,
     speaker_label: str | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     messages = [{"role": "system", "content": build_system_prompt(profile)}]
     messages.extend(
@@ -633,6 +635,8 @@ def request_reply(
     )
     messages.append({"role": "user", "content": final_user_text})
 
+    num_predict = max_tokens if max_tokens else config.llm_num_predict
+
     if config.llm_provider == "ollama":
         payload = {
             "model": config.model,
@@ -641,7 +645,7 @@ def request_reply(
             "keep_alive": config.llm_keep_alive,
             "options": {
                 "temperature": config.temperature,
-                "num_predict": config.llm_num_predict,
+                "num_predict": num_predict,
             },
         }
         return _request_ollama_reply(user_text, config, payload, web_context)
@@ -649,4 +653,6 @@ def request_reply(
     if config.llm_provider in CLI_PROVIDERS:
         return _request_cli_reply(user_text, config, messages, web_context)
 
-    return _request_openai_compatible_reply(user_text, config, messages, web_context)
+    return _request_openai_compatible_reply(
+        user_text, config, messages, web_context, max_tokens=num_predict
+    )
