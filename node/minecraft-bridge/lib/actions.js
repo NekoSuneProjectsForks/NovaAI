@@ -314,17 +314,35 @@ async function act(verb, args) {
       }
 
       case 'attack': {
-        const target = (args.target || args.name)
-          ? H.entityByName(args.target || args.name)
-          : H.nearestHostile(args.range || 12);
+        const named = args.target || args.name;
+        const target = named ? H.entityByName(named) : H.nearestHostile(args.range || 12);
         if (!target) {
-          return { ok: false, message: (args.target || args.name)
-            ? `can't see ${args.target || args.name}` : 'no hostiles in range' };
+          return { ok: false, message: named ? `can't see ${named}` : 'no hostiles in range' };
         }
         await equipBestWeapon();
-        await bot.lookAt(target.position.offset(0, 1.4, 0), true);
-        bot.attack(target);
-        return { ok: true, message: `attacked ${target.username || target.name}` };
+        const who = target.username || target.name;
+        // A named PLAYER gets a single hit (don't try to kill a friend); a mob
+        // is pursued and hit until it dies or we time out.
+        if (target.type === 'player') {
+          await bot.lookAt(target.position.offset(0, 1.4, 0), true);
+          bot.attack(target);
+          return { ok: true, message: `attacked ${who}` };
+        }
+        const end = Date.now() + Math.max(2000, Math.min(20000, (Number(args.seconds) || 12) * 1000));
+        let hits = 0;
+        while (target.isValid && Date.now() < end) {
+          try {
+            if (target.position.distanceTo(bot.entity.position) > 3) {
+              await bot.pathfinder.goto(new goals.GoalFollow(target, 2));
+            }
+            await bot.lookAt(target.position.offset(0, (target.height || 1.8) * 0.8, 0), true);
+            bot.attack(target);
+            hits++;
+          } catch (e) { /* keep swinging */ }
+          await sleep(450);
+        }
+        const killed = !target.isValid;
+        return { ok: hits > 0, message: killed ? `killed ${who}` : `attacked ${who} (${hits} hits)` };
       }
 
       case 'punch': {
