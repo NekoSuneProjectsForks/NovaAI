@@ -74,6 +74,73 @@ def _extract_command(reply: str) -> dict[str, Any] | None:
     return None
 
 
+# andy-4 (Mindcraft) emits !command("arg", n) syntax instead of our JSON. Map the
+# common Mindcraft commands to our verbs so its actions actually run.
+_MINDCRAFT_RE = re.compile(r"!([a-zA-Z]+)\s*(?:\(([^)]*)\))?")
+
+
+def _split_cmd_args(raw: str) -> list[str]:
+    out = []
+    for part in (raw or "").split(","):
+        p = part.strip().strip('"').strip("'").strip()
+        if p != "":
+            out.append(p)
+    return out
+
+
+def _extract_mindcraft(reply: str) -> dict[str, Any] | None:
+    """Translate a Mindcraft-style !command(...) into our {verb,args}."""
+    m = _MINDCRAFT_RE.search(reply or "")
+    if not m:
+        return None
+    name = m.group(1).lower()
+    a = _split_cmd_args(m.group(2) or "")
+    thought = (reply[: m.start()].strip() or reply.strip())[:160]
+
+    def cmd(verb, args=None):
+        return {"thought": thought, "verb": verb, "args": args or {}}
+
+    if name in ("followplayer", "gotoplayer", "goto_player"):
+        return cmd("follow", {"player": a[0]} if a else {})
+    if name in ("comehere", "come"):
+        return cmd("come", {"player": a[0]} if a else {})
+    if name in ("searchforblock", "collectblock", "collectblocks", "minepblock", "mineblock", "collect"):
+        return cmd("mine", {"name": a[0]} if a else {})
+    if name in ("searchforentity", "huntentity"):
+        return cmd("hunt", {"animal": a[0]} if a else {})
+    if name in ("attack", "attackplayer", "attackentity", "defend"):
+        return cmd("attack", {"target": a[0]} if a else {})
+    if name in ("placeblock", "placehere"):
+        return cmd("place", {"name": a[0]} if a else {})
+    if name in ("craftrecipe", "craft", "craftitem"):
+        return cmd("craft", {"name": a[0], "count": int(a[1])} if len(a) > 1 and a[1].isdigit() else ({"name": a[0]} if a else {}))
+    if name in ("equip",):
+        return cmd("equip", {"name": a[0]} if a else {})
+    if name in ("eat", "consume"):
+        return cmd("eat")
+    if name in ("smeltitem", "smelt"):
+        return cmd("smelt", {"input": a[0]} if a else {})
+    if name in ("gotocoordinate", "gotoxz", "navigateto"):
+        if len(a) >= 2:
+            try:
+                return cmd("goto", {"x": int(float(a[0])), "z": int(float(a[-1]))})
+            except ValueError:
+                pass
+        return cmd("explore")
+    if name in ("nearbyblocks", "stats", "inventory", "entities", "lookaround", "viewchest"):
+        return cmd("look")
+    if name in ("movearound", "moveaway", "explore", "newaction", "wander"):
+        return cmd("explore")
+    if name in ("say", "startconversation", "endconversation", "stfu"):
+        return cmd("say", {"text": a[0]} if a else {"text": thought})
+    if name in ("sleep", "rest"):
+        return cmd("sleep")
+    if name in ("stop", "stay"):
+        return cmd("stop")
+    # Unknown !command — at least surface the thought and keep moving.
+    return cmd("wander", {"seconds": 2})
+
+
 class GameAgent:
     def __init__(
         self,
@@ -204,6 +271,7 @@ class GameAgent:
         # companion persona prompt (sliders/memory/etc.), which the game doesn't
         # need — a much smaller prompt = far faster responses on local models.
         system_prompt = self._game_system_prompt()
+        verbs = self.driver.available_verbs()
         user_prompt = (
             f"Goal: {self.goal}\n\nWorld state:\n{obs.text}\n\nYour next single action (JSON only):"
         )
@@ -226,7 +294,8 @@ class GameAgent:
         if self._stop.is_set():
             return
 
-        command = _extract_command(result.reply)
+        # Prefer our JSON; if the model used Mindcraft !command syntax, translate it.
+        command = _extract_command(result.reply) or _extract_mindcraft(result.reply)
         thought = str(command.get("thought", "")).strip() if command else ""
         verb = str(command.get("verb", "")).strip().lower() if command else ""
         args = (command.get("args") if command and isinstance(command.get("args"), dict) else {})
