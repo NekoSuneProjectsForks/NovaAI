@@ -61,12 +61,13 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
     server_version = "NovaAIAvatarHTTP/1.0"
 
     def do_GET(self) -> None:
-        if self.path in {"/", "/index.html"}:
+        path = self.path.split("?", 1)[0]  # ignore query string (e.g. ?transparent=1)
+        if path in {"/", "/index.html"}:
             self._serve_file(STATIC_DIR / "avatar.html", content_type="text/html; charset=utf-8")
             return
 
-        if self.path.startswith("/uploads/"):
-            raw_name = unquote(self.path[len("/uploads/") :].split("?", 1)[0])
+        if path.startswith("/uploads/"):
+            raw_name = unquote(path[len("/uploads/") :])
             # Strip any path components to prevent directory traversal.
             local_path = AVATAR_UPLOADS_DIR / Path(raw_name).name
             self._serve_file(local_path, content_type="application/octet-stream")
