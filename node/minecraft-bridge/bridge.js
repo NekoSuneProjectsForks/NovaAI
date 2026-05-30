@@ -342,6 +342,22 @@ function findInventory(...needles) {
   return bot.inventory.items().find((i) => needles.some((n) => i.name.includes(n)));
 }
 
+// Breeding foods by animal.
+const ANIMAL_FOOD = {
+  cow: 'wheat', sheep: 'wheat', mooshroom: 'wheat', goat: 'wheat',
+  pig: 'carrot', chicken: 'wheat_seeds', rabbit: 'carrot',
+  wolf: 'beef', cat: 'cod', ocelot: 'cod', horse: 'golden_carrot',
+  donkey: 'golden_carrot', llama: 'hay_block', fox: 'sweet_berries',
+  panda: 'bamboo', turtle: 'seagrass', bee: 'flower', frog: 'slime_ball',
+};
+
+// Tool tiers best -> worst (lower index = better).
+const TOOL_TIERS = ['netherite', 'diamond', 'iron', 'golden', 'stone', 'wooden'];
+function toolTier(name) {
+  name = String(name).toLowerCase();
+  return TOOL_TIERS.find((t) => name.startsWith(t + '_')) || '';
+}
+
 function chestBlockIds() {
   const ids = [];
   for (const n of ['chest', 'trapped_chest', 'barrel', 'ender_chest']) {
@@ -1101,6 +1117,90 @@ async function act(verb, args) {
           } catch (e) { break; }
         }
         return { ok: got > 0, message: got ? `gathered ${got} ${name}` : `couldn't gather ${name}` };
+      }
+
+      // ── fishing ───────────────────────────────────────────────────────────
+      case 'fish': {
+        const rod = findInventory('fishing_rod');
+        if (!rod) return { ok: false, message: 'no fishing rod (craft one: 3 sticks + 2 string)' };
+        const water = bot.findBlock({ matching: idsForNames(['water']), maxDistance: 24 });
+        if (!water) return { ok: false, message: 'no water nearby to fish in' };
+        try {
+          await bot.pathfinder.goto(new goals.GoalNear(water.position.x, water.position.y, water.position.z, 4));
+          await bot.equip(rod, 'hand');
+          await bot.lookAt(water.position.offset(0.5, 0.6, 0.5), true);
+          await bot.fish();   // casts, waits for a bite, reels in
+          return { ok: true, message: 'caught something!' };
+        } catch (e) {
+          try { if (bot.usingHeldItem) await bot.activateItem(); } catch (_) { /* reel in */ }
+          return { ok: false, message: `fishing failed: ${(e && e.message) || e}` };
+        }
+      }
+
+      // ── animal breeding ───────────────────────────────────────────────────
+      case 'breed': {
+        let type = String(args.animal || args.name || '').toLowerCase();
+        const near = [];
+        for (const id in bot.entities) {
+          const e = bot.entities[id];
+          if (!e || !e.position) continue;
+          const nm = String(e.name || '').toLowerCase();
+          if (ANIMAL_FOOD[nm] && e.position.distanceTo(bot.entity.position) < 16) {
+            near.push({ e, nm, d: e.position.distanceTo(bot.entity.position) });
+          }
+        }
+        if (!near.length) return { ok: false, message: 'no breedable animals nearby' };
+        if (!type) {
+          const counts = {};
+          near.forEach((a) => { counts[a.nm] = (counts[a.nm] || 0) + 1; });
+          type = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+        }
+        const foodName = String(args.food || ANIMAL_FOOD[type] || '').toLowerCase();
+        const food = foodName && findInventory(foodName);
+        if (!food) return { ok: false, message: `need ${foodName || 'the right food'} to breed ${type}` };
+        const targets = near.filter((a) => a.nm === type).sort((a, b) => a.d - b.d).slice(0, 2);
+        if (targets.length < 2) return { ok: false, message: `need 2 ${type} close together` };
+        let fed = 0;
+        for (const t of targets) {
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(t.e.position.x, t.e.position.y, t.e.position.z, 2));
+            await bot.equip(food, 'hand');
+            await bot.lookAt(t.e.position.offset(0, 0.4, 0), true);
+            await bot.activateEntity(t.e);
+            fed++;
+          } catch (e) { /* skip */ }
+        }
+        return { ok: fed >= 2, message: fed >= 2 ? `fed two ${type} — they'll breed` : `only managed to feed ${fed} ${type}` };
+      }
+
+      // ── auto-upgrade tools ────────────────────────────────────────────────
+      case 'upgrade_tools': {
+        const toolKinds = ['pickaxe', 'axe', 'shovel', 'sword', 'hoe'];
+        const table = await ensureCraftingTable();
+        const made = [];
+        for (const kind of toolKinds) {
+          const owned = bot.inventory.items().filter((i) => i.name.endsWith('_' + kind));
+          const bestOwned = owned.length
+            ? Math.min(...owned.map((i) => {
+              const idx = TOOL_TIERS.indexOf(toolTier(i.name));
+              return idx === -1 ? 99 : idx;
+            }))
+            : 99;
+          for (let ti = 0; ti < bestOwned && ti < TOOL_TIERS.length; ti++) {
+            const item = bot.registry.itemsByName[`${TOOL_TIERS[ti]}_${kind}`];
+            if (!item) continue;
+            const recs = bot.recipesFor(item.id, null, 1, table || null);
+            if (recs.length) {
+              try { await bot.craft(recs[0], 1, table || null); made.push(`${TOOL_TIERS[ti]}_${kind}`); } catch (e) { /* skip */ }
+              break;  // crafted the best tier we can for this tool
+            }
+          }
+        }
+        try { await equipBestWeapon(); } catch (e) { /* ignore */ }
+        return {
+          ok: made.length > 0,
+          message: made.length ? `crafted ${made.join(', ')}` : 'no better tools craftable with current materials',
+        };
       }
 
       case 'place': {

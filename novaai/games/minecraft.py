@@ -27,6 +27,7 @@ _VERBS = [
     "find_ores", "mine", "collect", "gather", "craft", "place_table", "place", "place_at",
     "till", "plant", "harvest", "bonemeal", "plant_tree",
     "smelt", "take_smelted", "explore", "find_village", "list_trades", "trade",
+    "fish", "breed", "upgrade_tools",
     "attack", "punch", "defend", "equip", "equip_armor", "eat",
     "goto", "look", "sleep", "wake", "say", "wait", "stop",
 ]
@@ -183,7 +184,11 @@ class MinecraftDriver:
             "- Gather & craft your own gear: gather {name,count?} mines several "
             "blocks; craft {item,count?} auto-makes/places a crafting table if needed "
             "(e.g. craft planks -> sticks -> wooden_pickaxe -> stone tools). "
-            "place_table {} sets up a bench.\n"
+            "place_table {} sets up a bench. upgrade_tools {} auto-crafts the best "
+            "tools your materials allow (and equips a weapon).\n"
+            "- fish {} (needs a fishing rod + water). breed {animal?,food?}: feed two "
+            "nearby animals their food (cow/sheep=wheat, pig/rabbit=carrot, "
+            "chicken=wheat_seeds) so they breed.\n"
             "- Survival: you auto-eat when hungry (keeps you healed), but you can also "
             "eat {} on demand; equip {name,where?}; equip_armor {}.\n"
             "- follow/come {player?} (defaults to owner); bring {name,count?}; "
