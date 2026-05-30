@@ -95,10 +95,37 @@ class MemoryStore:
         except Exception:
             return None
 
+    def _ollama_base(self) -> str:
+        url = self.config.llm_api_url or "http://127.0.0.1:11434/api/chat"
+        if "/api/" in url:
+            return url.split("/api/")[0].rstrip("/")
+        return "http://127.0.0.1:11434"
+
+    def _embed_ollama(self, text: str) -> np.ndarray | None:
+        url = self._ollama_base() + "/api/embeddings"
+        try:
+            resp = requests.post(
+                url,
+                json={"model": self.config.rag_embedding_model, "prompt": text},
+                timeout=self.config.request_timeout,
+            )
+            resp.raise_for_status()
+            vec = resp.json().get("embedding")
+            if not vec:
+                return None
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            norm = np.linalg.norm(arr)
+            return arr / norm if norm > 0 else arr
+        except Exception:
+            return None
+
     def embed(self, text: str) -> np.ndarray | None:
         if not self.config.rag_enabled or not text.strip():
             return None
-        if self.config.rag_embedding_provider == "openai":
+        provider = self.config.rag_embedding_provider
+        if provider == "ollama":
+            return self._embed_ollama(text)
+        if provider == "openai":
             return self._embed_openai(text)
         return self._embed_local(text)
 

@@ -55,46 +55,30 @@ def screen_size() -> tuple[int, int] | None:
         return None
 
 
+def _ollama_base(config: Config) -> str:
+    url = config.llm_api_url or "http://127.0.0.1:11434/api/chat"
+    if "/api/" in url:
+        return url.split("/api/")[0].rstrip("/")
+    return "http://127.0.0.1:11434"
+
+
 def caption(config: Config, png_bytes: bytes, prompt: str) -> str:
-    """Describe a screenshot via the configured vision model. Best-effort."""
+    """Describe a screenshot via a local Ollama vision model (e.g. moondream)."""
     model = config.vision_model
     if not model or not png_bytes:
         return "(no vision model configured — playing without screen analysis)"
     b64 = base64.b64encode(png_bytes).decode("ascii")
-    base = config.llm_api_url
-    headers = {"Content-Type": "application/json"}
-    if config.llm_api_key:
-        headers["Authorization"] = f"Bearer {config.llm_api_key}"
+    # Vision models like moondream/llava run in Ollama, so always hit the local
+    # Ollama chat endpoint with the image, regardless of the chat LLM provider.
+    url = _ollama_base(config) + "/api/chat"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt, "images": [b64]}],
+        "stream": False,
+    }
     try:
-        if config.llm_provider == "ollama":
-            url = base.split("/api/")[0].rstrip("/") + "/api/chat"
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt, "images": [b64]}],
-                "stream": False,
-            }
-            resp = requests.post(url, json=payload, headers=headers, timeout=60)
-            resp.raise_for_status()
-            return resp.json()["message"]["content"].strip()
-        # OpenAI-compatible vision
-        url = base
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64}"},
-                        },
-                    ],
-                }
-            ],
-        }
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        resp = requests.post(url, json=payload, timeout=90)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        return resp.json()["message"]["content"].strip()
     except Exception as exc:
         return f"(vision model unavailable: {exc})"

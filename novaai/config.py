@@ -167,6 +167,8 @@ def normalize_twitch_reply_mode(value: str) -> str:
 
 def normalize_rag_embedding_provider(value: str) -> str:
     normalized = value.strip().lower()
+    if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
+        return "ollama"
     if normalized in {"openai", "openai-compatible", "api", "remote"}:
         return "openai"
     return "local"
