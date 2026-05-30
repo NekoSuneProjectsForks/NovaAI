@@ -45,6 +45,34 @@ def _infer_subject(goal: str) -> str | None:
     return None
 
 
+_MOVE_INTENTS = {
+    "walk", "move", "explore", "wander", "goto", "come", "follow", "mine",
+    "collect", "gather", "hunt", "go_home", "forward", "press",
+}
+_TALK_INTENTS = {"say", "chat", "startconversation", "tell"}
+
+
+def _coerce_verb(verb: str, args: dict[str, Any], verbs: list[str]) -> tuple[str, dict[str, Any]]:
+    """Map a requested verb onto one the active driver supports.
+
+    Stops "unknown verb" errors when a Minecraft-trained model asks for verbs the
+    universal/VRChat/etc. driver doesn't have.
+    """
+    if verb and verb in verbs:
+        return verb, args
+    vset = set(verbs)
+    if verb in _TALK_INTENTS and "say" in vset:
+        return "say", args
+    if verb in _MOVE_INTENTS or not verb:
+        for cand in ("walk", "explore", "wander", "move_mouse", "forward"):
+            if cand in vset:
+                return cand, ({"seconds": 2} if cand in ("walk", "wander", "explore") else args)
+    for cand in ("wait", "look", "say"):
+        if cand in vset:
+            return cand, {}
+    return (verbs[0] if verbs else "wait"), {}
+
+
 def _extract_command(reply: str) -> dict[str, Any] | None:
     """Best-effort parse of the model's JSON action (tolerant of fences/prose)."""
     if not reply:
@@ -345,10 +373,10 @@ class GameAgent:
             if snippet:
                 self.narrate(snippet, result.emotion)
 
-        # Fall back to wandering so the bot always does *something* (and so a
-        # broken pathfinder/version doesn't leave it frozen).
+        # Map the requested verb onto one this driver actually supports (so a
+        # Minecraft-trained model's verbs work in VRChat/universal/etc.).
         if not verb or verb not in verbs:
-            verb, args = ("wander", {"seconds": 2}) if "wander" in verbs else ("look", {})
+            verb, args = _coerce_verb(verb, args, verbs)
 
         # If a subject-needing verb came with no item/block, infer it from the
         # goal so "I need wood" -> mine {name: oak_log} instead of failing.
