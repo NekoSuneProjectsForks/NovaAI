@@ -324,6 +324,7 @@ class Config:
     owner_name: str
     mc_owner_username: str
     mc_help_whitelist: tuple[str, ...]
+    mc_home: str | None
     mc_profiles_folder: str | None
     mc_version: str | None
     # Singing
@@ -634,6 +635,7 @@ class Config:
                 for name in (os.getenv("MC_HELP_WHITELIST", "") or "").split(",")
                 if name.strip()
             ),
+            mc_home=parse_optional_str_env("MC_HOME"),
             mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
             mc_version=parse_optional_str_env("MC_VERSION"),
             singing_enabled=parse_bool_env("SINGING_ENABLED", False),

@@ -25,7 +25,8 @@ BRIDGE_DIR = ROOT_DIR / "node" / "minecraft-bridge"
 _VERBS = [
     "follow", "come", "bring", "find_in_chests", "withdraw", "store", "drop",
     "find_ores", "mine", "collect", "gather", "craft", "place_table", "place", "place_at",
-    "till", "plant", "harvest", "bonemeal", "plant_tree",
+    "till", "plant", "harvest", "bonemeal", "plant_tree", "irrigate", "fill_bucket",
+    "set_home", "go_home",
     "smelt", "cook", "take_smelted", "explore", "find_village", "list_trades", "trade",
     "fish", "hunt", "breed", "upgrade_tools", "build_house",
     "attack", "punch", "defend", "retaliate", "equip", "equip_armor", "eat",
@@ -78,6 +79,8 @@ class MinecraftDriver:
             "--viewer-port", str(self.config.mc_viewer_port),
             "--viewer-first-person", "true" if self.config.mc_viewer_first_person else "false",
         ]
+        if self.config.mc_home:
+            env_args += ["--home", str(self.config.mc_home)]
 
         # Capture stdout so we can surface bridge logs (esp. the Microsoft
         # device-code login prompt) to the UI.
@@ -176,10 +179,14 @@ class MinecraftDriver:
             "defend {seconds} (hostiles); retaliate {seconds} = hit back at whoever "
             "is attacking you (the nearest non-owner PLAYER, else hostiles) — use this "
             "when told you're under attack by a player.\n"
-            "- Farming like a human: till {radius?} (hoe -> farmland), "
-            "plant {seed,radius?}, harvest {crop?,replant?} (auto-replants), "
-            "bonemeal {radius?} (speed crops/saplings), plant_tree {sapling,radius?}; "
-            "chop trees with mine {name:'log'}.\n"
+            "- Farming like a human: till {radius?} (hoe -> farmland; auto-adds a "
+            "water source if you carry a water_bucket), plant {seed,radius?}, harvest "
+            "{crop?,replant?} (auto-replants), bonemeal {radius?}, plant_tree "
+            "{sapling,radius?}; chop trees with mine {name:'log'}. Crops NEED water "
+            "within 4 blocks — use fill_bucket (at a lake) then irrigate to make a "
+            "water source.\n"
+            "- Home: set_home {} remembers your spot; go_home {} walks back to it; "
+            "sleep {} in a bed at night (place a bed first if needed).\n"
             "- Smelting: smelt {input,fuel?,count?} (needs a furnace nearby; smelts "
             "in the world over time), then take_smelted {} to collect. e.g. smelt "
             "{input:'raw_iron'}; coal is default fuel — find/mine it with find_ores "
@@ -231,7 +238,10 @@ class MinecraftDriver:
             f"{owner} tells you to punish/'smack' someone, 'punch' that player.\n"
             "Read chat (recentChat in the state): if a player asks for help, "
             f"{help_line}respond with 'say' and assist (bring items, defend them, "
-            "etc.). Greet your owner. Use 'say' to talk in-game when it helps."
+            "etc.). Greet your owner. Use 'say' to talk in-game when it helps.\n"
+            "Home & rest: set_home early to mark your base, go_home to return when "
+            "lost or in danger, and sleep in a bed at night to skip it (place a bed "
+            "first if needed). Keep a farm watered — crops need water within 4 blocks."
         )
 
     def viewer_url(self) -> str:
@@ -281,4 +291,12 @@ class MinecraftDriver:
             f"Nearby hostiles: {hostiles_text}",
             f"Recent chat: {chat_text}",
         ]
+        home = raw.get("home")
+        if home:
+            lines.append(
+                f"Home: {home.get('x')},{home.get('y')},{home.get('z')} "
+                f"({raw.get('homeDistance', '?')}m away) — go_home to return."
+            )
+        else:
+            lines.append("Home: not set (use set_home to remember this spot).")
         return "\n".join(lines)

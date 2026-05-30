@@ -44,6 +44,13 @@ const VIEWER_PORT = parseInt(getArg('viewer-port', 'MC_VIEWER_PORT', '8768'), 10
 const VIEWER_FIRST_PERSON =
   String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'true')).toLowerCase() !== 'false';
 
+let homePos = null;   // remembered home location (set_home / MC_HOME=x,y,z)
+const HOME_ARG = String(getArg('home', 'MC_HOME', ''));
+if (HOME_ARG) {
+  const p = HOME_ARG.split(',').map((n) => parseInt(n.trim(), 10));
+  if (p.length === 3 && p.every((n) => !Number.isNaN(n))) homePos = { x: p[0], y: p[1], z: p[2] };
+}
+
 const HOSTILES = new Set([
   'zombie', 'husk', 'drowned', 'zombie_villager', 'skeleton', 'stray', 'wither_skeleton',
   'spider', 'cave_spider', 'creeper', 'witch', 'slime', 'magma_cube', 'blaze', 'ghast',
@@ -424,6 +431,8 @@ function observe() {
     players,
     nearbyHostiles: hostiles,
     recentChat: chatLog.slice(-8),
+    home: homePos,
+    homeDistance: homePos ? Math.round(Math.hypot(pos.x - homePos.x, pos.z - homePos.z)) : null,
   };
 }
 
@@ -598,6 +607,28 @@ async function buildHouse(args) {
     }
   }
   return { ok: placed > 0, message: `built a ${w}x${d}x${h} house (${placed} blocks placed)` };
+}
+
+// Place a water source so nearby farmland stays hydrated (crops need water
+// within 4 blocks). Digs a soil block and pours a water bucket into it.
+async function ensureFarmWater() {
+  const bucket = findInventory('water_bucket');
+  if (!bucket) return false;
+  if (bot.findBlock({ matching: idsForNames(['water']), maxDistance: 6 })) return true;
+  const soil = bot.findBlock({ matching: idsForNames(['farmland', 'dirt', 'grass_block']), maxDistance: 6 });
+  if (!soil) return false;
+  try {
+    await bot.pathfinder.goto(new goals.GoalNear(soil.position.x, soil.position.y, soil.position.z, 2));
+    const target = bot.blockAt(soil.position);
+    try { if (bot.tool) await bot.tool.equipForBlock(target, {}); } catch (e) { /* ignore */ }
+    await bot.dig(target);                       // make a 1-deep hole
+    await bot.equip(bucket, 'hand');
+    await bot.lookAt(target.position.offset(0.5, -0.1, 0.5), true);
+    await bot.activateItem();                     // pour water into the hole
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function equipBestWeapon() {
@@ -830,7 +861,57 @@ async function act(verb, args) {
             tilled++;
           } catch (e) { /* skip */ }
         }
-        return { ok: tilled > 0, message: tilled ? `tilled ${tilled} block(s)` : 'nothing to till nearby' };
+        // Farmland needs water within 4 blocks — auto-place a source if we can.
+        let watered = '';
+        if (tilled > 0 && findInventory('water_bucket')
+            && !bot.findBlock({ matching: idsForNames(['water']), maxDistance: 6 })) {
+          if (await ensureFarmWater()) watered = ' and added a water source';
+        }
+        return { ok: tilled > 0, message: tilled ? `tilled ${tilled} block(s)${watered}` : 'nothing to till nearby' };
+      }
+
+      case 'irrigate': {
+        if (!findInventory('water_bucket')) {
+          return { ok: false, message: 'no water bucket — fill one with fill_bucket at a lake/well' };
+        }
+        if (bot.findBlock({ matching: idsForNames(['water']), maxDistance: 6 })) {
+          return { ok: true, message: 'water is already nearby' };
+        }
+        return (await ensureFarmWater())
+          ? { ok: true, message: 'placed a water source for the crops' }
+          : { ok: false, message: 'couldn\'t place water (need soil + a water bucket)' };
+      }
+
+      case 'fill_bucket': {
+        const empty = bot.inventory.items().find((i) => i.name === 'bucket');
+        if (!empty) return { ok: false, message: 'no empty bucket (craft one from 3 iron)' };
+        const water = bot.findBlock({ matching: idsForNames(['water']), maxDistance: 24 });
+        if (!water) return { ok: false, message: 'no water nearby to fill from' };
+        try {
+          await bot.pathfinder.goto(new goals.GoalNear(water.position.x, water.position.y, water.position.z, 2));
+          await bot.equip(empty, 'hand');
+          await bot.lookAt(water.position.offset(0.5, 0.5, 0.5), true);
+          await bot.activateItem();
+          return { ok: true, message: 'filled a water bucket' };
+        } catch (e) {
+          return { ok: false, message: `couldn't fill: ${(e && e.message) || e}` };
+        }
+      }
+
+      case 'set_home': {
+        const p = bot.entity.position.floored();
+        homePos = { x: p.x, y: p.y, z: p.z };
+        return { ok: true, message: `home set to ${homePos.x},${homePos.y},${homePos.z}` };
+      }
+
+      case 'go_home': {
+        if (!homePos) return { ok: false, message: 'no home set — use set_home or MC_HOME=x,y,z' };
+        try {
+          await bot.pathfinder.goto(new goals.GoalNear(homePos.x, homePos.y, homePos.z, 1));
+          return { ok: true, message: `back home at ${homePos.x},${homePos.y},${homePos.z}` };
+        } catch (e) {
+          return { ok: false, message: `couldn't path home: ${(e && e.message) || e}` };
+        }
       }
 
       case 'plant': {
