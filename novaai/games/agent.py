@@ -99,6 +99,7 @@ class GameAgent:
         self._wake = threading.Event()  # fire a tick immediately (e.g. new order)
         self._thread: threading.Thread | None = None
         self._log: list[dict[str, str]] = []  # short rolling game history
+        self._system_prompt_cache: str | None = None  # built once per session
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -126,6 +127,41 @@ class GameAgent:
     def set_goal(self, goal: str) -> None:
         self.goal = goal.strip() or self.goal
         self._wake.set()  # act on the new order right away
+
+    def _game_system_prompt(self) -> str:
+        """Compact system prompt for the game, built once and cached.
+
+        Deliberately omits the full companion persona (personality sliders,
+        memory, boundaries, etc.) — the game only needs identity, mission, the
+        verb list, and the JSON format, so the prompt stays small and fast.
+        """
+        if self._system_prompt_cache is not None:
+            return self._system_prompt_cache
+
+        def _driver_text(method: str) -> str:
+            if hasattr(self.driver, method):
+                try:
+                    return self.driver.__getattribute__(method)() or ""
+                except Exception:
+                    return ""
+            return ""
+
+        profile = self.profile_getter() or {}
+        name = profile.get("companion_name", "NovaAI")
+        verbs = self.driver.available_verbs()
+        mission = _driver_text("mission")
+        verbs_help = _driver_text("verbs_help")
+        prompt = (
+            f"You are {name}, autonomously playing {self.driver.name}. "
+            "Reply with ONLY one JSON object: "
+            '{"thought":"<short in-character line>","verb":"<one verb>","args":{...}}. '
+            "No prose, no markdown."
+            + (f"\n{mission}" if mission else "")
+            + f"\nVerbs: {', '.join(verbs)}."
+            + (f"\n{verbs_help}" if verbs_help else "")
+        )
+        self._system_prompt_cache = prompt
+        return prompt
 
     # ── loop ──────────────────────────────────────────────────────────────────
 
@@ -163,30 +199,13 @@ class GameAgent:
         if self._stop.is_set():
             return
 
-        verbs = self.driver.available_verbs()
-
-        def _driver_text(method: str) -> str:
-            if hasattr(self.driver, method):
-                try:
-                    return self.driver.__getattribute__(method)() or ""
-                except Exception:
-                    return ""
-            return ""
-
-        mission = _driver_text("mission")
-        verbs_help = _driver_text("verbs_help")
-        framing = (
-            f"You are autonomously playing {self.driver.name}. Think out loud briefly in "
-            "first person, then choose ONE action. Respond ONLY with JSON of the form "
-            '{"thought": "<one or two in-character sentences>", "verb": "<one verb>", '
-            '"args": {<key: value>}}. '
-            + (f"\n{mission}" if mission else "")
-            + f"\nAllowed verbs: {', '.join(verbs)}."
-            + (f"\n{verbs_help}" if verbs_help else "")
-        )
+        # The system prompt (identity + mission + verbs + format) never changes
+        # during a session, so build it ONCE and reuse it. This replaces the full
+        # companion persona prompt (sliders/memory/etc.), which the game doesn't
+        # need — a much smaller prompt = far faster responses on local models.
+        system_prompt = self._game_system_prompt()
         user_prompt = (
-            f"Goal: {self.goal}\n\nCurrent world state:\n{obs.text}\n\n"
-            "Decide your next single action now."
+            f"Goal: {self.goal}\n\nWorld state:\n{obs.text}\n\nYour next single action (JSON only):"
         )
 
         result = generate_reply(
@@ -195,12 +214,12 @@ class GameAgent:
                 profile=self.profile_getter(),
                 config=self.config,
                 source="game",
-                extra_system=[framing],
+                system_override=system_prompt,
                 use_shared_history=False,
                 history=list(self._log),
                 # Game replies are short JSON; cap tokens so local models (Ollama)
                 # respond fast and don't time out each tick.
-                max_tokens=256,
+                max_tokens=200,
             )
         )
 

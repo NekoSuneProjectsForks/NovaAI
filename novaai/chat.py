@@ -605,8 +605,10 @@ def request_reply(
     history: list[dict[str, str]] | None = None,
     speaker_label: str | None = None,
     max_tokens: int | None = None,
+    system_override: str | None = None,
 ) -> str:
-    messages = [{"role": "system", "content": build_system_prompt(profile)}]
+    system_prompt = system_override if system_override else build_system_prompt(profile)
+    messages = [{"role": "system", "content": system_prompt}]
     messages.extend(
         history if history is not None else read_recent_history(config.history_turns)
     )
