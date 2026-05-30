@@ -184,84 +184,41 @@ class MinecraftDriver:
         return list(_VERBS)
 
     def verbs_help(self) -> str:
+        # Compact cheat sheet — args always go in "args". Kept terse so the
+        # per-tick prompt stays small and responses are fast.
         return (
-            "How to use verbs (ALWAYS put the target in args, e.g. "
-            '{"verb":"mine","args":{"name":"oak_log"}} — never leave args empty):\n'
-            "- find_ores {name?, exposed?}: returns visible ore coords. PREFER this, "
-            "then mine {x,y,z} the result — legit, no x-ray (only ores you can see).\n"
-            "- mine/collect {name} OR {x,y,z}; place {name} (under you); "
-            "place_at {name,x,y,z} (build on a surface).\n"
-            "- attack {target:'<player/mob>'} or {} for nearest hostile; "
-            "punch {target:'<player>'} = one fist hit (use for 'smack <name>'); "
-            "defend {seconds} (hostiles); retaliate {seconds} = hit back at whoever "
-            "is attacking you (the nearest non-owner PLAYER, else hostiles) — use this "
-            "when told you're under attack by a player.\n"
-            "- Farming like a human: till {radius?} (hoe -> farmland; auto-adds a "
-            "water source if you carry a water_bucket), plant {seed,radius?}, harvest "
-            "{crop?,replant?} (auto-replants), bonemeal {radius?}, plant_tree "
-            "{sapling,radius?}; chop trees with mine {name:'log'}. Crops NEED water "
-            "within 4 blocks — use fill_bucket (at a lake) then irrigate to make a "
-            "water source. make_water_source {} digs a 2x2 hole and makes an INFINITE "
-            "water supply (needs 2 water buckets) you can refill from forever.\n"
-            "- Home: set_home {} remembers your spot; go_home {} walks back to it; "
-            "sleep {} in a bed at night (place a bed first if needed).\n"
-            "- Smelting: smelt {input,fuel?,count?} (needs a furnace nearby; smelts "
-            "in the world over time), then take_smelted {} to collect. e.g. smelt "
-            "{input:'raw_iron'}; coal is default fuel — find/mine it with find_ores "
-            "{name:'coal'}.\n"
-            "- Explore & villages: explore {distance?,direction?} to travel and load "
-            "new land; find_village {} to spot villagers/bells; list_trades {} to read "
-            "a nearby villager's trades; trade {index} or {item:'emerald'} to trade.\n"
-            "- Gather & craft your own gear: gather {name,count?} mines several "
-            "blocks; craft {item,count?} auto-makes/places a crafting table if needed "
-            "(e.g. craft planks -> sticks -> wooden_pickaxe -> stone tools). "
-            "place_table {} sets up a bench. upgrade_tools {} auto-crafts the best "
-            "tools your materials allow (and equips a weapon).\n"
-            "- fish {} (needs a fishing rod + water). hunt {animal?,count?}: kill "
-            "passive animals (cow/pig/chicken/sheep) for raw meat. cook {food?}: "
-            "smelt raw meat/food into cooked food (needs a furnace). breed "
-            "{animal?,food?}: feed two nearby animals their food so they breed.\n"
-            "- build_house {width?,depth?,height?,material?}: build a walls+roof house "
-            "with a doorway from blocks you carry (gather/craft planks first).\n"
-            "- Survival: you auto-eat when hungry (keeps you healed), but you can also "
-            "eat {} on demand; equip {name,where?}; equip_armor {}.\n"
-            "- follow/come {player?} (defaults to owner); bring {name,count?}; "
-            "find_in_chests {name}; withdraw {name,count?}; store {name,count?}; drop {name,count?}.\n"
-            "- goto {x,z,y?}; explore {distance?,direction?}; wander {seconds?} "
-            "(simple walk if pathfinding is stuck); sleep {}; wake {}; say {text}; "
-            "wait {}; stop {}."
+            "Verb args (always fill args; e.g. mine {name:'oak_log'}):\n"
+            "find_ores{name?} -> coords, then mine{x,y,z} (legit, no x-ray) | "
+            "mine/collect/gather{name|x,y,z} | place{name} place_at{name,x,y,z}\n"
+            "attack{target?} defend{seconds} retaliate{seconds}=hit back at attacking player | "
+            "punch{target}=one fist hit (use for 'smack')\n"
+            "craft{item,count?}(auto table) upgrade_tools equip{name} equip_armor eat | "
+            "smelt{input} cook{food?} take_smelted (need furnace; coal fuel)\n"
+            "till plant{seed} harvest bonemeal plant_tree | fill_bucket irrigate "
+            "make_water_source(2x2 infinite, 2 buckets) — crops need water <=4 blocks\n"
+            "fish hunt{animal?} breed{animal?} | find_in_chests{name} withdraw{name} "
+            "store{name} drop{name} bring{name} | find_village list_trades trade{index|item}\n"
+            "follow{player?} come{player?} goto{x,z} explore{distance?,direction?} "
+            "wander{seconds?}(if stuck) | build_house{width?,depth?} | "
+            "set_home go_home sleep wake say{text} wait stop"
         )
 
     def default_goal(self) -> str:
-        return (
-            "Survive and thrive in Minecraft: explore the world, gather resources, "
-            "mine ores, craft and upgrade your own tools, build a house, farm and "
-            "cook food, trade with villagers, and keep yourself fed and healed. Stay "
-            "safe and useful."
-        )
+        return "Survive and thrive: explore, gather, mine, craft/upgrade tools, build, farm & cook, trade, stay fed and safe."
 
     def mission(self) -> str:
         owner = self.config.mc_owner_username or self.config.owner_name or "your owner"
         whitelist = list(self.config.mc_help_whitelist)
         help_line = (
-            f"You may help these players if they ask in chat: {', '.join(whitelist)}. "
-            if whitelist
-            else "Only help your owner unless told otherwise. "
+            f"Help in chat: {', '.join(whitelist)}." if whitelist else "Help only the owner."
         )
         return (
-            "You are a capable, confident female Minecraft player with full agency — "
-            "act decisively, be a little bossy, and don't ask permission for routine "
-            "tasks. Your jobs: explore, survive, build, farm & cook food, mine and "
-            "find ores, find villages and trade, craft & upgrade gear, and fight.\n"
-            "Combat: kill nearby hostile mobs that threaten you; if a player attacks "
-            "you or your owner, use 'retaliate' to hit them back until they stop. If "
-            f"{owner} tells you to punish/'smack' someone, 'punch' that player.\n"
-            "Read chat (recentChat in the state): if a player asks for help, "
-            f"{help_line}respond with 'say' and assist (bring items, defend them, "
-            "etc.). Greet your owner. Use 'say' to talk in-game when it helps.\n"
-            "Home & rest: set_home early to mark your base, go_home to return when "
-            "lost or in danger, and sleep in a bed at night to skip it (place a bed "
-            "first if needed). Keep a farm watered — crops need water within 4 blocks."
+            "You are a confident, slightly bossy female Minecraft player with full "
+            "agency — act decisively, don't ask permission for routine tasks.\n"
+            f"Combat: kill threatening hostiles; if a player attacks you/{owner}, "
+            f"retaliate until they stop; if {owner} says smack <name>, punch them.\n"
+            f"Read recentChat: {help_line} Reply with 'say'. set_home early; go_home "
+            "if in danger; sleep at night."
         )
 
     def push_thought(self, text: str) -> None:
