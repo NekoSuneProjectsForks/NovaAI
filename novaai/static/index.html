@@ -503,6 +503,16 @@ tailwind.config = {
       <!-- ═══════════════════════════════════════════════════════════════ -->
       <div id="page-settings" class="page flex-col h-full overflow-y-auto p-6 gap-5">
 
+        <!-- Editable configuration (Twitch / models / voice / media / singing) -->
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Configuration</div>
+            <button onclick="loadAppSettings()" class="btn-secondary px-3 py-1 rounded text-[11px]">Detect models / Reload</button>
+          </div>
+          <div class="text-[11px] text-nova-muted mb-3">Edit live — saved to NovaAI and overrides .env. Model boxes auto-suggest detected models (Ollama / OpenAI / LiteLLM).</div>
+          <div id="app-settings" class="space-y-4"></div>
+        </div>
+
         <!-- Voice & Input -->
         <div class="card p-5">
           <div class="text-[13px] font-bold mb-4">Voice & Input</div>
@@ -715,7 +725,7 @@ function showPage(key) {
   if (key === 'shopping')   loadShopping();
   if (key === 'todo')       loadTodos();
   if (key === 'profiles')   loadProfiles();
-  if (key === 'settings')   syncSettings();
+  if (key === 'settings')   { syncSettings(); loadAppSettings(); }
   if (key === 'dashboard')  syncDashboard();
 }
 
@@ -828,6 +838,73 @@ function syncSettings() {
   $('set-llm-hw').textContent       = s.system_summary || '--';
   $('set-tts').textContent          = s.tts_provider || '--';
   $('set-stt').textContent          = (s.stt_provider || '--') + ' / ' + (s.stt_model || '--');
+}
+
+// ── Editable configuration (Settings panel) ──────────────────────────────
+
+let _appSections = null;
+let _appModels = { chat: [], vision: [], embedding: [] };
+
+async function loadAppSettings() {
+  const wrap = $('app-settings');
+  if (!wrap) return;
+  try { _appModels = await api().get_models(); } catch(e) { _appModels = { chat: [], vision: [], embedding: [] }; }
+  let data;
+  try { data = await api().get_app_settings(); } catch(e) { console.error(e); return; }
+  _appSections = data.sections || {};
+  wrap.innerHTML = '';
+  ['chat', 'vision', 'embedding'].forEach(cat => {
+    const dl = document.createElement('datalist');
+    dl.id = 'dl-' + cat;
+    (_appModels[cat] || []).forEach(m => { const o = document.createElement('option'); o.value = m; dl.appendChild(o); });
+    wrap.appendChild(dl);
+  });
+  Object.entries(_appSections).forEach(([name, meta]) => wrap.appendChild(_renderAppSection(name, meta)));
+}
+
+function _renderAppSection(name, meta) {
+  const card = document.createElement('div');
+  card.className = 'border border-nova-border rounded-lg p-4';
+  const grid = (meta.fields || []).map(f => {
+    const id = 'aset__' + name + '__' + f.key;
+    const v = f.value != null ? String(f.value) : '';
+    if (f.type === 'bool') {
+      return `<label class="flex items-center gap-2 text-[12px] col-span-2"><input id="${id}" type="checkbox" class="w-4 h-4 rounded accent-violet-500" ${f.value ? 'checked' : ''}/> <span>${escHtml(f.label)}</span></label>`;
+    }
+    if (f.type === 'select') {
+      const opts = (f.options || []).map(o => `<option ${String(f.value) === String(o) ? 'selected' : ''}>${escHtml(o)}</option>`).join('');
+      return `<label class="flex flex-col gap-1 text-[11px] text-nova-muted"><span>${escHtml(f.label)}</span><select id="${id}" class="w-full">${opts}</select></label>`;
+    }
+    if (f.type === 'model') {
+      return `<label class="flex flex-col gap-1 text-[11px] text-nova-muted"><span>${escHtml(f.label)}</span><input id="${id}" list="dl-${f.category || 'chat'}" class="w-full" value="${escHtml(v)}" /></label>`;
+    }
+    const itype = f.type === 'password' ? 'password' : ((f.type === 'float' || f.type === 'int') ? 'number' : 'text');
+    const step = f.type === 'float' ? ' step="0.05"' : '';
+    return `<label class="flex flex-col gap-1 text-[11px] text-nova-muted"><span>${escHtml(f.label)}</span><input id="${id}" type="${itype}"${step} class="w-full" value="${escHtml(v)}" /></label>`;
+  }).join('');
+  card.innerHTML = `<div class="flex items-center justify-between mb-2"><div class="text-[12px] font-bold">${escHtml(meta.label)}</div><button class="btn-primary px-3 py-1 rounded text-[11px]" onclick="doSaveAppSection('${name}')">Save</button></div><div class="grid grid-cols-2 gap-x-3 gap-y-2">${grid}</div>`;
+  return card;
+}
+
+function collectAppSection(name) {
+  const out = {};
+  const meta = _appSections && _appSections[name];
+  if (!meta) return out;
+  (meta.fields || []).forEach(f => {
+    const el = $('aset__' + name + '__' + f.key);
+    if (!el) return;
+    out[f.key] = f.type === 'bool' ? el.checked : el.value;
+  });
+  return out;
+}
+
+async function doSaveAppSection(name) {
+  try {
+    const r = await api().save_app_settings(name, collectAppSection(name));
+    if (r && !r.ok && r.msg) { showNotification(r.msg); return; }
+    showNotification('Saved.');
+    if (name === 'llm') await loadAppSettings();   // refresh detected models
+  } catch(e) { console.error(e); }
 }
 
 // ── Push handlers (called from Python) ───────────────────────────────────
