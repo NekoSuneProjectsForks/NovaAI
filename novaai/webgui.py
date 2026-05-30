@@ -384,6 +384,18 @@ class Api:
             self._push_status("Stopped.")
             return "Stopped."
 
+        # Game command — if a game agent is running, route in-game orders to it
+        # (combat, build, mine, follow, etc.) instead of just chatting about them.
+        game_reply = self._maybe_handle_game_command(user_text)
+        if game_reply is not None:
+            append_history("user", user_text)
+            append_history("assistant", game_reply)
+            self._push_chat(companion, game_reply, "assistant")
+            if self.state.voice_enabled and not self._stopped():
+                self._speak(game_reply, "neutral")
+            self._push_status("Ready.")
+            return "Game command handled."
+
         # Web context
         web_context: str | None = None
         if self.config.web_browsing_enabled:
@@ -422,7 +434,7 @@ class Api:
                 config=self.config,
                 source="chat",
                 web_context=web_context,
-                extra_system=self._recall(user_text),
+                extra_system=self._game_awareness() + self._recall(user_text),
             )
         )
         reply = result.reply
@@ -843,6 +855,55 @@ class Api:
                 self.memory.remember(self.active_profile_id, content, source="game", speaker="game")
             except Exception:
                 pass
+
+    def _game_running(self) -> bool:
+        return bool(self.game_agent and self.game_agent.is_running())
+
+    def _game_awareness(self) -> list[str]:
+        """Tell the chat persona it currently controls an in-game body."""
+        if not self._game_running():
+            return []
+        driver = getattr(self.game_agent, "driver", None)
+        game = getattr(driver, "name", "a game")
+        return [
+            f"You are RIGHT NOW controlling a character in {game} — you CAN move, "
+            "fight, mine, build, eat, and act in the world through your game body. "
+            "Never say you have no controls or can't fight/move. If the user tells you "
+            "to do something in-game (fight back, defend, build, mine, follow, come, "
+            "etc.), confirm you're doing it; the action is carried out by your game agent."
+        ]
+
+    # Phrases that mean "do this with your in-game body".
+    _COMBAT_TRIGGERS = (
+        "under attack", "being attacked", "attacked by", "attacking you", "attacking us",
+        "fight back", "hit them", "hit him", "hit her", "hit back", "smack",
+        "defend", "protect me", "protect us", "kill them", "kill him", "kill her",
+        "punch", "they're hitting", "stop them", "fend them", "fight them",
+    )
+    _COMMAND_TRIGGERS = (
+        "build", "mine", "dig", "chop", "gather", "farm", "plant", "harvest",
+        "follow me", "come here", "come to me", "bring me", "find", "explore",
+        "craft", "smelt", "cook", "fish", "hunt", "breed", "store", "go to",
+        "make a", "make me", "place", "trade", "sleep", "equip", "collect", "kill",
+        "attack",
+    )
+
+    def _maybe_handle_game_command(self, user_text: str) -> str | None:
+        if not self._game_running():
+            return None
+        lower = f" {user_text.lower().strip()} "
+        if any(k in lower for k in self._COMBAT_TRIGGERS):
+            self.game_agent.set_goal(
+                "You are under attack by a player or mob. FIGHT BACK now: equip your "
+                "best weapon and armor, then use the 'retaliate' verb to hit the "
+                "attacker (nearest non-owner player, else hostiles) repeatedly until "
+                "they stop. Eat to heal if low, and stay alive. Keep retaliating."
+            )
+            return "On it — fighting back! Equipping a weapon and hitting them until they stop."
+        if any(k in lower for k in self._COMMAND_TRIGGERS):
+            self.game_agent.set_goal(user_text.strip())
+            return f"Got it — doing that in-game now: {user_text.strip()}"
+        return None
 
     def get_game_status(self) -> dict[str, Any]:
         running = bool(self.game_agent and self.game_agent.is_running())

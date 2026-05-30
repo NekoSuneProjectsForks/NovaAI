@@ -1100,6 +1100,39 @@ async function act(verb, args) {
       case 'defend':
         return await defend(args.seconds);
 
+      case 'retaliate': {
+        // Hit back at whoever's attacking: nearest non-owner player, else hostiles.
+        const seconds = Math.max(1, Math.min(10, Number(args.seconds) || 6));
+        await equipBestWeapon();
+        const end = Date.now() + seconds * 1000;
+        let hits = 0;
+        let who = null;
+        while (Date.now() < end) {
+          let target = null;
+          let bestD = 9;
+          for (const id in bot.entities) {
+            const e = bot.entities[id];
+            if (!e || !e.position || e === bot.entity || e.type !== 'player') continue;
+            const nm = String(e.username || e.name || '').toLowerCase();
+            if (nm && nm !== OWNER) {
+              const dd = e.position.distanceTo(bot.entity.position);
+              if (dd < bestD) { bestD = dd; target = e; }
+            }
+          }
+          if (!target) target = nearestHostile(9);
+          if (!target) break;
+          who = target.username || target.name;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 2));
+            await bot.lookAt(target.position.offset(0, 1.4, 0), true);
+            bot.attack(target);
+            hits++;
+          } catch (e) { /* keep swinging */ }
+          await sleep(350);
+        }
+        return { ok: hits > 0, message: hits ? `hit ${who || 'the attacker'} back ${hits}x` : 'no attacker in range' };
+      }
+
       case 'mine':
       case 'collect': {
         let block;

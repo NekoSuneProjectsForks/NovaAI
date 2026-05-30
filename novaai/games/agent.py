@@ -54,6 +54,7 @@ class GameAgent:
         self.goal = goal
 
         self._stop = threading.Event()
+        self._wake = threading.Event()  # fire a tick immediately (e.g. new order)
         self._thread: threading.Thread | None = None
         self._log: list[dict[str, str]] = []  # short rolling game history
 
@@ -68,6 +69,7 @@ class GameAgent:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         # Abort any in-flight action immediately (e.g. a long pathfinder move):
         # stopping the driver makes the current observe/act call fail fast so the
         # loop unwinds instead of blocking until the action finishes.
@@ -81,6 +83,7 @@ class GameAgent:
 
     def set_goal(self, goal: str) -> None:
         self.goal = goal.strip() or self.goal
+        self._wake.set()  # act on the new order right away
 
     # ── loop ──────────────────────────────────────────────────────────────────
 
@@ -97,7 +100,9 @@ class GameAgent:
                 self._tick()
             except Exception as exc:
                 self.narrate(f"Something went wrong: {exc}", "anxious")
-            self._stop.wait(self.tick_seconds)
+            # Wait for the next tick, but wake instantly on a new order / stop.
+            self._wake.wait(self.tick_seconds)
+            self._wake.clear()
 
         try:
             self.driver.stop()

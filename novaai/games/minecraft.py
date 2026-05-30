@@ -28,7 +28,7 @@ _VERBS = [
     "till", "plant", "harvest", "bonemeal", "plant_tree",
     "smelt", "cook", "take_smelted", "explore", "find_village", "list_trades", "trade",
     "fish", "hunt", "breed", "upgrade_tools", "build_house",
-    "attack", "punch", "defend", "equip", "equip_armor", "eat",
+    "attack", "punch", "defend", "retaliate", "equip", "equip_armor", "eat",
     "goto", "look", "sleep", "wake", "say", "wait", "stop",
 ]
 
@@ -173,7 +173,9 @@ class MinecraftDriver:
             "place_at {name,x,y,z} (build on a surface).\n"
             "- attack {target:'<player/mob>'} or {} for nearest hostile; "
             "punch {target:'<player>'} = one fist hit (use for 'smack <name>'); "
-            "defend {seconds}.\n"
+            "defend {seconds} (hostiles); retaliate {seconds} = hit back at whoever "
+            "is attacking you (the nearest non-owner PLAYER, else hostiles) — use this "
+            "when told you're under attack by a player.\n"
             "- Farming like a human: till {radius?} (hoe -> farmland), "
             "plant {seed,radius?}, harvest {crop?,replant?} (auto-replants), "
             "bonemeal {radius?} (speed crops/saplings), plant_tree {sapling,radius?}; "
