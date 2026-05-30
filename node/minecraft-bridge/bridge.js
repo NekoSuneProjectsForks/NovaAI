@@ -51,11 +51,29 @@ const HOSTILES = new Set([
 let bot = null;
 let connected = false;
 let lastError = '';
+let reconnectTimer = null;
+let reconnectDelay = 5000;   // grows with backoff, resets on successful spawn
 
 function log(msg) {
   // Printed to stdout; the Python driver forwards these lines to the UI.
   // eslint-disable-next-line no-console
   console.log('[novaai-bridge] ' + msg);
+}
+
+function scheduleReconnect(reason) {
+  if (reconnectTimer) return;            // already scheduled
+  const secs = Math.round(reconnectDelay / 1000);
+  log(`disconnected (${reason}); reconnecting in ${secs}s`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    try {
+      createBot();
+    } catch (e) {
+      log('reconnect failed: ' + ((e && e.message) || e));
+      scheduleReconnect('retry');
+    }
+  }, reconnectDelay);
+  reconnectDelay = Math.min(60000, Math.floor(reconnectDelay * 1.5));
 }
 
 function createBot() {
@@ -76,20 +94,40 @@ function createBot() {
   }
   if (VERSION) opts.version = String(VERSION);
 
+  // Drop the previous (dead) bot's listeners before creating a new one.
+  if (bot) {
+    try { bot.removeAllListeners(); } catch (e) { /* ignore */ }
+  }
+
   bot = mineflayer.createBot(opts);
   bot.loadPlugin(pathfinder);
 
   bot.once('spawn', () => {
     connected = true;
+    reconnectDelay = 5000;   // reset backoff after a good connection
     try {
       bot.pathfinder.setMovements(new Movements(bot));
     } catch (e) { /* ignore */ }
     log(`spawned as ${bot.username}${OWNER ? `, owner = ${OWNER}` : ''}`);
   });
 
-  bot.on('end', () => { connected = false; });
-  bot.on('error', (err) => { lastError = String((err && err.message) || err); log('error: ' + lastError); });
-  bot.on('kicked', (reason) => { lastError = 'kicked: ' + reason; connected = false; log('kicked: ' + reason); });
+  // Auto-reconnect on disconnect/kick so a server restart or blip recovers.
+  bot.on('end', (reason) => {
+    connected = false;
+    scheduleReconnect(reason || 'end');
+  });
+  bot.on('kicked', (reason) => {
+    lastError = 'kicked: ' + reason;
+    connected = false;
+    log('kicked: ' + reason);
+    // 'end' usually follows and triggers the reconnect; schedule as a fallback.
+    scheduleReconnect('kicked');
+  });
+  bot.on('error', (err) => {
+    lastError = String((err && err.message) || err);
+    log('error: ' + lastError);
+    if (!connected) scheduleReconnect('error');   // e.g. connection refused
+  });
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
