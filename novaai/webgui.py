@@ -892,6 +892,11 @@ class Api:
         if not self._game_running():
             return None
         lower = f" {user_text.lower().strip()} "
+        # Punish a named player -> punch them (pass the literal order so the agent
+        # punches the right target).
+        if "smack" in lower or "punch" in lower:
+            self.game_agent.set_goal(user_text.strip())
+            return f"On it — {user_text.strip()} 😤"
         if any(k in lower for k in self._COMBAT_TRIGGERS):
             self.game_agent.set_goal(
                 "You are under attack by a player or mob. FIGHT BACK now: equip your "
@@ -982,6 +987,12 @@ class Api:
                     "system",
                 )
 
+            default_goal = "explore and survive"
+            if hasattr(game_driver, "default_goal"):
+                try:
+                    default_goal = game_driver.default_goal()
+                except Exception:
+                    pass
             self.game_agent = GameAgent(
                 driver=game_driver,
                 config=self.config,
@@ -990,7 +1001,7 @@ class Api:
                 on_update=self._game_update,
                 remember=self._game_remember,
                 tick_seconds=self.config.game_tick_seconds,
-                goal=(goal.strip() or "explore and survive"),
+                goal=(goal.strip() or default_goal),
             )
             self.game_agent.start()
             return {"ok": True, "msg": "Game agent started."}

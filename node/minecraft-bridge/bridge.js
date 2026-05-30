@@ -59,6 +59,7 @@ let reconnectTimer = null;
 let reconnectDelay = 5000;   // grows with backoff, resets on successful spawn
 let autoEating = false;
 let autoEatTimer = null;
+let chatLog = [];   // recent in-game chat so the agent can read/react
 const AUTO_EAT_THRESHOLD = 17;   // eat to top up hunger so health regenerates
 
 function startAutoEat() {
@@ -181,6 +182,11 @@ function createBot() {
     lastError = String((err && err.message) || err);
     log('error: ' + lastError);
     if (!connected) scheduleReconnect('error');   // e.g. connection refused
+  });
+  bot.on('chat', (username, message) => {
+    if (!username || username === bot.username) return;
+    chatLog.push({ username, message: String(message).slice(0, 140) });
+    if (chatLog.length > 20) chatLog.shift();
   });
 }
 
@@ -417,6 +423,7 @@ function observe() {
     nearbyBlocks,
     players,
     nearbyHostiles: hostiles,
+    recentChat: chatLog.slice(-8),
   };
 }
 

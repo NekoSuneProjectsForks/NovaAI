@@ -122,18 +122,24 @@ class GameAgent:
             return
 
         verbs = self.driver.available_verbs()
-        verbs_help = ""
-        if hasattr(self.driver, "verbs_help"):
-            try:
-                verbs_help = self.driver.verbs_help()
-            except Exception:
-                verbs_help = ""
+
+        def _driver_text(method: str) -> str:
+            if hasattr(self.driver, method):
+                try:
+                    return self.driver.__getattribute__(method)() or ""
+                except Exception:
+                    return ""
+            return ""
+
+        mission = _driver_text("mission")
+        verbs_help = _driver_text("verbs_help")
         framing = (
             f"You are autonomously playing {self.driver.name}. Think out loud briefly in "
             "first person, then choose ONE action. Respond ONLY with JSON of the form "
             '{"thought": "<one or two in-character sentences>", "verb": "<one verb>", '
             '"args": {<key: value>}}. '
-            f"Allowed verbs: {', '.join(verbs)}."
+            + (f"\n{mission}" if mission else "")
+            + f"\nAllowed verbs: {', '.join(verbs)}."
             + (f"\n{verbs_help}" if verbs_help else "")
         )
         user_prompt = (

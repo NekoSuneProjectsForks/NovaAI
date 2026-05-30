@@ -323,6 +323,7 @@ class Config:
     node_path: str | None
     owner_name: str
     mc_owner_username: str
+    mc_help_whitelist: tuple[str, ...]
     mc_profiles_folder: str | None
     mc_version: str | None
     # Singing
@@ -627,6 +628,11 @@ class Config:
                 parse_optional_str_env("MC_OWNER_USERNAME")
                 or parse_optional_str_env("OWNER_NAME")
                 or ""
+            ),
+            mc_help_whitelist=tuple(
+                name.strip()
+                for name in (os.getenv("MC_HELP_WHITELIST", "") or "").split(",")
+                if name.strip()
             ),
             mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
             mc_version=parse_optional_str_env("MC_VERSION"),

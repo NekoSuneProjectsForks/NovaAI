@@ -205,6 +205,35 @@ class MinecraftDriver:
             "- goto {x,z,y?}; sleep {}; wake {}; say {text}; wait {}; stop {}."
         )
 
+    def default_goal(self) -> str:
+        return (
+            "Survive and thrive in Minecraft: explore the world, gather resources, "
+            "mine ores, craft and upgrade your own tools, build a house, farm and "
+            "cook food, trade with villagers, and keep yourself fed and healed. Stay "
+            "safe and useful."
+        )
+
+    def mission(self) -> str:
+        owner = self.config.mc_owner_username or self.config.owner_name or "your owner"
+        whitelist = list(self.config.mc_help_whitelist)
+        help_line = (
+            f"You may help these players if they ask in chat: {', '.join(whitelist)}. "
+            if whitelist
+            else "Only help your owner unless told otherwise. "
+        )
+        return (
+            "You are a capable, confident female Minecraft player with full agency — "
+            "act decisively, be a little bossy, and don't ask permission for routine "
+            "tasks. Your jobs: explore, survive, build, farm & cook food, mine and "
+            "find ores, find villages and trade, craft & upgrade gear, and fight.\n"
+            "Combat: kill nearby hostile mobs that threaten you; if a player attacks "
+            "you or your owner, use 'retaliate' to hit them back until they stop. If "
+            f"{owner} tells you to punish/'smack' someone, 'punch' that player.\n"
+            "Read chat (recentChat in the state): if a player asks for help, "
+            f"{help_line}respond with 'say' and assist (bring items, defend them, "
+            "etc.). Greet your owner. Use 'say' to talk in-game when it helps."
+        )
+
     def viewer_url(self) -> str:
         return f"http://127.0.0.1:{self.config.mc_viewer_port}"
 
@@ -236,6 +265,11 @@ class MinecraftDriver:
             )
         else:
             owner_line = "Owner: (none set)."
+        chat = raw.get("recentChat", [])
+        chat_text = (
+            " | ".join(f"{c.get('username')}: {c.get('message')}" for c in chat[-6:])
+            or "none"
+        )
         lines = [
             owner_line,
             f"Health: {raw.get('health', '?')}/20, Food: {raw.get('food', '?')}/20",
@@ -245,5 +279,6 @@ class MinecraftDriver:
             f"Nearby blocks: {', '.join(nearby[:12]) or 'none'}",
             f"Players: {players_text}",
             f"Nearby hostiles: {hostiles_text}",
+            f"Recent chat: {chat_text}",
         ]
         return "\n".join(lines)
