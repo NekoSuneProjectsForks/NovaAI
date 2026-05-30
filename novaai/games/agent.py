@@ -131,8 +131,12 @@ def _extract_mindcraft(reply: str) -> dict[str, Any] | None:
         return cmd("look")
     if name in ("movearound", "moveaway", "explore", "newaction", "wander"):
         return cmd("explore")
-    if name in ("say", "startconversation", "endconversation", "stfu"):
-        return cmd("say", {"text": a[0]} if a else {"text": thought})
+    if name in ("startconversation", "sendmessage", "tell", "whisper", "msg"):
+        # First arg is the target player, the rest is the message.
+        text = ", ".join(a[1:]) if len(a) > 1 else (thought or (a[0] if a else ""))
+        return cmd("say", {"text": text})
+    if name in ("say", "chat", "endconversation", "stfu"):
+        return cmd("say", {"text": (", ".join(a) if a else thought)})
     if name in ("sleep", "rest"):
         return cmd("sleep")
     if name in ("stop", "stay"):
