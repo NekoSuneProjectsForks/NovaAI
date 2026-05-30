@@ -818,16 +818,26 @@ async function act(verb, args) {
       }
 
       case 'find_ores': {
-        const name = String(args.name || '').toLowerCase();
+        // Accept loose names ("diamond", "diamonds", "wood"->ignored, "any") and
+        // strip _ore so "diamond_ore" -> "diamond"; blank/unknown = all ores.
+        let name = aliasName(args.name || args.block || args.item || '')
+          .replace(/_?ores?$/, '').replace(/s$/, '');
+        if (['any', 'ore', 'all', 'log', ''].includes(name)) name = '';
         const exposedOnly = args.exposed !== false;   // legit by default
-        const ids = [];
+        let ids = [];
         for (const key in bot.registry.blocksByName) {
           const isOre = name
             ? (key.includes(name) && key.includes('ore'))
             : ORE_KEYWORDS.some((o) => key.includes(o));
           if (isOre) ids.push(bot.registry.blocksByName[key].id);
         }
-        if (!ids.length) return { ok: false, message: 'no such ore type' };
+        // Unknown ore name -> fall back to scanning for ALL ores rather than fail.
+        if (!ids.length) {
+          for (const key in bot.registry.blocksByName) {
+            if (ORE_KEYWORDS.some((o) => key.includes(o))) ids.push(bot.registry.blocksByName[key].id);
+          }
+        }
+        if (!ids.length) return { ok: false, message: 'no ores known on this version' };
         const positions = bot.findBlocks({ matching: ids, maxDistance: 32, count: 64 });
         const list = [];
         for (const pos of positions) {

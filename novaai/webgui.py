@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -1120,6 +1121,31 @@ class Api:
                     pass
         self._reresolve_llm_url()
 
+    def restart_app(self) -> dict[str, Any]:
+        """Relaunch NovaAI (applies any settings/code changes cleanly)."""
+        def _do_restart() -> None:
+            time.sleep(0.4)
+            # Stop game/stream/avatar cleanly so ports free up before relaunch.
+            try:
+                if self.game_agent:
+                    self.game_agent.stop()
+            except Exception:
+                pass
+            try:
+                if self.twitch:
+                    self.twitch.stop()
+            except Exception:
+                pass
+            try:
+                cwd = str(Path(__file__).resolve().parent.parent)
+                subprocess.Popen([sys.executable] + sys.argv, cwd=cwd)
+            except Exception:
+                pass
+            os._exit(0)
+
+        threading.Thread(target=_do_restart, daemon=True).start()
+        return {"ok": True, "msg": "Restarting NovaAI..."}
+
     def get_app_settings(self) -> dict[str, Any]:
         sections: dict[str, Any] = {}
         for name, meta in APP_SETTINGS_SCHEMA.items():
@@ -1184,16 +1210,26 @@ class Api:
             return []
 
     def _openai_models(self) -> list[str]:
-        if not self.config or self.config.llm_provider != "openai":
+        """List models from the configured OpenAI-compatible / LiteLLM endpoint.
+
+        Works whenever an API URL is set (e.g. a LiteLLM gateway), independent of
+        the active provider, so the dropdowns can always show what's available.
+        """
+        if not self.config:
             return []
-        base = self.config.llm_api_url.split("/chat/completions")[0].rstrip("/")
-        if base.endswith("/v1"):
-            url = base + "/models"
-        else:
-            url = base + "/v1/models"
+        raw = (
+            os.environ.get("LLM_API_URL")
+            or os.environ.get("OPENAI_API_URL")
+            or (self.config.llm_api_url if self.config.llm_provider == "openai" else "")
+        )
+        if not raw or not raw.startswith("http"):
+            return []
+        base = raw.split("/chat/completions")[0].rstrip("/")
+        url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
         headers = {}
-        if self.config.llm_api_key:
-            headers["Authorization"] = f"Bearer {self.config.llm_api_key}"
+        key = self.config.llm_api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         try:
             resp = requests.get(url, headers=headers, timeout=8)
             resp.raise_for_status()
@@ -1204,16 +1240,18 @@ class Api:
             return []
 
     def get_models(self) -> dict[str, Any]:
-        """Auto-detect available models, grouped by category (chat/vision/embedding)."""
+        """Auto-detect available models live, grouped chat/vision/embedding.
+
+        Always queries the API(s) fresh so newly-added models show up: the local
+        Ollama daemon AND any configured OpenAI/LiteLLM gateway.
+        """
         buckets: dict[str, set] = {"chat": set(), "vision": set(), "embedding": set()}
-        # Local Ollama always provides vision/embedding (and chat) candidates.
         for name in self._ollama_tags():
             buckets[self._categorize_model(name)].add(name)
+        for name in self._openai_models():          # LiteLLM/OpenAI, if URL set
+            buckets[self._categorize_model(name)].add(name)
         provider = self.config.llm_provider if self.config else "ollama"
-        if provider == "openai":
-            for name in self._openai_models():
-                buckets[self._categorize_model(name)].add(name)
-        elif provider == "claude-code":
+        if provider == "claude-code":
             buckets["chat"].update(["sonnet", "opus", "haiku"])
         elif provider == "codex":
             buckets["chat"].update(["gpt-5-codex", "gpt-5", "o4-mini"])

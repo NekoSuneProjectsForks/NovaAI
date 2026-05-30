@@ -507,7 +507,10 @@ tailwind.config = {
         <div class="card p-5">
           <div class="flex items-center justify-between mb-3">
             <div class="text-[13px] font-bold">Configuration</div>
-            <button onclick="loadAppSettings()" class="btn-secondary px-3 py-1 rounded text-[11px]">Detect models / Reload</button>
+            <div class="flex gap-2">
+              <button onclick="loadAppSettings()" class="btn-secondary px-3 py-1 rounded text-[11px]">Detect models / Reload</button>
+              <button onclick="doRestartApp()" class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-[11px] font-semibold">Restart NovaAI</button>
+            </div>
           </div>
           <div class="text-[11px] text-nova-muted mb-3">Edit live — saved to NovaAI and overrides .env. Model boxes auto-suggest detected models (Ollama / OpenAI / LiteLLM).</div>
           <div id="app-settings" class="space-y-4"></div>
@@ -896,6 +899,11 @@ function collectAppSection(name) {
     out[f.key] = f.type === 'bool' ? el.checked : el.value;
   });
   return out;
+}
+
+async function doRestartApp() {
+  if (!confirm('Restart NovaAI now? This closes and reopens the app to apply changes.')) return;
+  try { await api().restart_app(); showNotification('Restarting NovaAI...'); } catch(e) { console.error(e); }
 }
 
 async function doSaveAppSection(name) {
