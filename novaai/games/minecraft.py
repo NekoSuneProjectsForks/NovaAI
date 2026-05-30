@@ -25,6 +25,7 @@ BRIDGE_DIR = ROOT_DIR / "node" / "minecraft-bridge"
 _VERBS = [
     "follow", "come", "bring", "find_in_chests", "withdraw", "store", "drop",
     "find_ores", "mine", "collect", "craft", "place", "place_at",
+    "till", "plant", "harvest", "bonemeal", "plant_tree",
     "attack", "punch", "defend", "equip", "equip_armor", "eat",
     "goto", "look", "sleep", "wake", "say", "wait", "stop",
 ]
@@ -167,6 +168,10 @@ class MinecraftDriver:
             "- attack {target:'<player/mob>'} or {} for nearest hostile; "
             "punch {target:'<player>'} = one fist hit (use for 'smack <name>'); "
             "defend {seconds}.\n"
+            "- Farming like a human: till {radius?} (hoe -> farmland), "
+            "plant {seed,radius?}, harvest {crop?,replant?} (auto-replants), "
+            "bonemeal {radius?} (speed crops/saplings), plant_tree {sapling,radius?}; "
+            "chop trees with mine {name:'log'}.\n"
             "- equip {name,where?}; equip_armor {}; eat {}.\n"
             "- follow/come {player?} (defaults to owner); bring {name,count?}; "
             "find_in_chests {name}; withdraw {name,count?}; store {name,count?}; drop {name,count?}.\n"

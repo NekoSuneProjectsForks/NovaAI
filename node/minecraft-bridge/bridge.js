@@ -266,6 +266,44 @@ const ORE_KEYWORDS = ['coal_ore', 'copper_ore', 'iron_ore', 'gold_ore', 'redston
   'lapis_ore', 'diamond_ore', 'emerald_ore', 'nether_gold_ore', 'nether_quartz_ore',
   'ancient_debris'];
 
+// ── farming data ─────────────────────────────────────────────────────────────
+const CROP_MATURE_AGE = { wheat: 7, carrots: 7, potatoes: 7, beetroots: 3, nether_wart: 3 };
+const CROP_TO_SEED = {
+  wheat: 'wheat_seeds', carrots: 'carrot', potatoes: 'potato',
+  beetroots: 'beetroot_seeds', nether_wart: 'nether_wart',
+};
+
+function idsForNames(names) {
+  const ids = [];
+  for (const n of names) {
+    const b = bot.registry.blocksByName[n];
+    if (b) ids.push(b.id);
+  }
+  return ids;
+}
+
+function cropAge(block) {
+  try {
+    if (block && block.getProperties) {
+      const a = block.getProperties().age;
+      if (a !== undefined) return parseInt(a, 10);
+    }
+  } catch (e) { /* ignore */ }
+  return (block && typeof block.metadata === 'number') ? block.metadata : NaN;
+}
+
+function isMatureCrop(block) {
+  if (!block) return false;
+  const max = CROP_MATURE_AGE[block.name];
+  if (max === undefined) return false;
+  const age = cropAge(block);
+  return !isNaN(age) && age >= max;
+}
+
+function findInventory(...needles) {
+  return bot.inventory.items().find((i) => needles.some((n) => i.name.includes(n)));
+}
+
 function chestBlockIds() {
   const ids = [];
   for (const n of ['chest', 'trapped_chest', 'barrel', 'ender_chest']) {
@@ -590,6 +628,131 @@ async function act(verb, args) {
       case 'wake': {
         try { await bot.wake(); return { ok: true, message: 'woke up' }; }
         catch (e) { return { ok: false, message: 'not sleeping' }; }
+      }
+
+      // ── farming ──────────────────────────────────────────────────────────
+      case 'till': {
+        const hoe = findInventory('_hoe');
+        if (!hoe) return { ok: false, message: 'no hoe in inventory' };
+        const radius = Math.max(1, Math.min(8, Number(args.radius) || 4));
+        const max = Math.max(1, Math.min(32, Number(args.count) || 8));
+        const ids = idsForNames(['dirt', 'grass_block', 'coarse_dirt', 'rooted_dirt', 'dirt_path']);
+        const positions = bot.findBlocks({ matching: ids, maxDistance: radius + 2, count: 96 });
+        await bot.equip(hoe, 'hand');
+        let tilled = 0;
+        for (const p of positions) {
+          if (tilled >= max) break;
+          const above = bot.blockAt(p.offset(0, 1, 0));
+          if (!above || above.name !== 'air') continue;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 2));
+            await bot.activateBlock(bot.blockAt(p));
+            tilled++;
+          } catch (e) { /* skip */ }
+        }
+        return { ok: tilled > 0, message: tilled ? `tilled ${tilled} block(s)` : 'nothing to till nearby' };
+      }
+
+      case 'plant': {
+        const seedName = String(args.seed || args.name || 'wheat_seeds').toLowerCase();
+        const seed = findInventory(seedName);
+        if (!seed) return { ok: false, message: `no ${seedName} in inventory` };
+        const radius = Math.max(1, Math.min(8, Number(args.radius) || 4));
+        const max = Math.max(1, Math.min(32, Number(args.count) || 8));
+        const positions = bot.findBlocks({ matching: idsForNames(['farmland']), maxDistance: radius + 2, count: 96 });
+        let planted = 0;
+        for (const p of positions) {
+          if (planted >= max) break;
+          const above = bot.blockAt(p.offset(0, 1, 0));
+          if (!above || above.name !== 'air') continue;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 2));
+            await bot.equip(seed, 'hand');
+            await bot.placeBlock(bot.blockAt(p), new Vec3(0, 1, 0));
+            planted++;
+          } catch (e) { /* skip */ }
+        }
+        return { ok: planted > 0, message: planted ? `planted ${planted} ${seedName}` : 'no empty farmland nearby (till first)' };
+      }
+
+      case 'harvest': {
+        const radius = Math.max(1, Math.min(16, Number(args.radius) || 6));
+        const max = Math.max(1, Math.min(128, Number(args.count) || 32));
+        const cropName = String(args.crop || args.name || '').toLowerCase();
+        const cropNames = cropName ? [cropName] : Object.keys(CROP_MATURE_AGE);
+        const positions = bot.findBlocks({ matching: idsForNames(cropNames), maxDistance: radius + 2, count: 256 });
+        const replant = args.replant !== false;
+        let harvested = 0;
+        for (const p of positions) {
+          if (harvested >= max) break;
+          const block = bot.blockAt(p);
+          if (!isMatureCrop(block)) continue;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 1));
+            const name = block.name;
+            await bot.dig(bot.blockAt(p));
+            harvested++;
+            if (replant) {
+              const seedName = CROP_TO_SEED[name];
+              const seed = seedName && findInventory(seedName);
+              const below = bot.blockAt(p.offset(0, -1, 0));
+              if (seed && below && below.name === 'farmland') {
+                try { await bot.equip(seed, 'hand'); await bot.placeBlock(below, new Vec3(0, 1, 0)); } catch (e) { /* skip */ }
+              }
+            }
+          } catch (e) { /* skip */ }
+        }
+        return { ok: harvested > 0, message: harvested ? `harvested ${harvested} crop(s)` : 'no mature crops nearby' };
+      }
+
+      case 'bonemeal': {
+        const bm = findInventory('bone_meal');
+        if (!bm) return { ok: false, message: 'no bone meal in inventory' };
+        const radius = Math.max(1, Math.min(8, Number(args.radius) || 4));
+        const max = Math.max(1, Math.min(32, Number(args.count) || 8));
+        const ids = [];
+        for (const key in bot.registry.blocksByName) {
+          if (CROP_MATURE_AGE[key] !== undefined || key.includes('sapling')) {
+            ids.push(bot.registry.blocksByName[key].id);
+          }
+        }
+        const positions = bot.findBlocks({ matching: ids, maxDistance: radius + 2, count: 64 });
+        let used = 0;
+        for (const p of positions) {
+          if (used >= max) break;
+          const block = bot.blockAt(p);
+          if (block && CROP_MATURE_AGE[block.name] !== undefined && isMatureCrop(block)) continue;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 2));
+            await bot.equip(bm, 'hand');
+            await bot.activateBlock(bot.blockAt(p));
+            used++;
+          } catch (e) { /* skip */ }
+        }
+        return { ok: used > 0, message: used ? `used bone meal ${used}x` : 'nothing to bone-meal nearby' };
+      }
+
+      case 'plant_tree': {
+        const sapName = String(args.sapling || args.name || 'sapling').toLowerCase();
+        const sap = findInventory(sapName + (sapName.includes('sapling') ? '' : '_sapling')) || findInventory('sapling');
+        if (!sap) return { ok: false, message: 'no sapling in inventory' };
+        const radius = Math.max(1, Math.min(8, Number(args.radius) || 4));
+        const max = Math.max(1, Math.min(16, Number(args.count) || 3));
+        const ids = idsForNames(['grass_block', 'dirt', 'podzol', 'coarse_dirt', 'rooted_dirt']);
+        const positions = bot.findBlocks({ matching: ids, maxDistance: radius + 2, count: 96 });
+        let planted = 0;
+        for (const p of positions) {
+          if (planted >= max) break;
+          const above = bot.blockAt(p.offset(0, 1, 0));
+          if (!above || above.name !== 'air') continue;
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 2));
+            await bot.equip(sap, 'hand');
+            await bot.placeBlock(bot.blockAt(p), new Vec3(0, 1, 0));
+            planted++;
+          } catch (e) { /* skip */ }
+        }
+        return { ok: planted > 0, message: planted ? `planted ${planted} sapling(s)` : 'no open ground to plant on' };
       }
 
       case 'defend':
