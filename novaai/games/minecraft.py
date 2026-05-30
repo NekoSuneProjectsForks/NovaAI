@@ -159,6 +159,7 @@ class MinecraftDriver:
         "bring", "hunt", "fish", "plant", "harvest", "till", "bonemeal", "plant_tree",
         "smelt", "take_smelted", "find_in_chests", "withdraw", "store", "make_water_source",
         "irrigate", "fill_bucket", "place_at",
+        "attack", "defend", "retaliate",  # combat loops until the target dies / timeout
     }
 
     def act(self, command: GameCommand) -> dict[str, Any]:
