@@ -153,6 +153,80 @@ _GAME_FIELD_TYPES: dict[str, str] = {
 }
 
 
+# General app settings shown in the Settings panel (override .env, persisted).
+# "model" fields render with an auto-detected dropdown for their category.
+APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
+    "llm": {
+        "label": "AI Provider & Models",
+        "fields": [
+            {"key": "llm_provider", "label": "Provider", "type": "select",
+             "options": ["ollama", "openai", "claude-code", "codex", "cli"]},
+            {"key": "model", "label": "Chat model", "type": "model", "category": "chat"},
+            {"key": "vision_model", "label": "Vision model", "type": "model", "category": "vision"},
+            {"key": "rag_embedding_provider", "label": "Embedding provider", "type": "select",
+             "options": ["local", "ollama", "openai"]},
+            {"key": "rag_embedding_model", "label": "Embedding model", "type": "model", "category": "embedding"},
+            {"key": "llm_api_url", "label": "API URL (openai/LiteLLM)", "type": "text"},
+            {"key": "llm_api_key", "label": "API key", "type": "password"},
+            {"key": "temperature", "label": "Temperature", "type": "float"},
+        ],
+    },
+    "twitch": {
+        "label": "Twitch",
+        "fields": [
+            {"key": "twitch_channel", "label": "Channel (no #)", "type": "text"},
+            {"key": "twitch_bot_username", "label": "Bot username (blank = anonymous read-only)", "type": "text"},
+            {"key": "twitch_oauth_token", "label": "OAuth token (blank = anonymous)", "type": "password"},
+            {"key": "twitch_reply_mode", "label": "Reply mode", "type": "select",
+             "options": ["mention", "all", "command"]},
+            {"key": "twitch_reply_cooldown_seconds", "label": "Reply cooldown (sec)", "type": "float"},
+        ],
+    },
+    "voice": {
+        "label": "Voice (TTS)",
+        "fields": [
+            {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
+            {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
+            {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
+            {"key": "xtts_speed", "label": "Speed", "type": "float"},
+            {"key": "tts_language", "label": "Language", "type": "text"},
+        ],
+    },
+    "stt": {
+        "label": "Speech-to-Text",
+        "fields": [
+            {"key": "stt_provider", "label": "STT engine", "type": "select",
+             "options": ["faster-whisper", "google"]},
+            {"key": "stt_model", "label": "Whisper model", "type": "text"},
+            {"key": "stt_language", "label": "Language", "type": "text"},
+        ],
+    },
+    "media": {
+        "label": "Media",
+        "fields": [
+            {"key": "media_region", "label": "Region", "type": "text"},
+            {"key": "music_provider_default", "label": "Music provider", "type": "select",
+             "options": ["soundcloud", "radio", "deezer", "spotify"]},
+            {"key": "soundcloud_stream_endpoint", "label": "Stream endpoint", "type": "text"},
+        ],
+    },
+    "singing": {
+        "label": "Singing",
+        "fields": [
+            {"key": "singing_enabled", "label": "Enable singing", "type": "bool"},
+            {"key": "singing_backend", "label": "Backend", "type": "select",
+             "options": ["local", "rvc", "cloud"]},
+            {"key": "rvc_model_path", "label": "RVC model .pth (rvc)", "type": "text"},
+            {"key": "singing_api_url", "label": "Singing API URL (cloud)", "type": "text"},
+            {"key": "singing_api_key", "label": "Singing API key (cloud)", "type": "password"},
+        ],
+    },
+}
+_APP_FIELD_TYPES: dict[str, str] = {
+    f["key"]: f["type"] for meta in APP_SETTINGS_SCHEMA.values() for f in meta["fields"]
+}
+
+
 def _coerce_game_setting(value: Any, ftype: str) -> Any:
     if ftype == "int":
         try:
@@ -208,6 +282,7 @@ class Api:
         """Heavy init — called from JS once the loading screen is visible."""
         ensure_runtime_dirs()
         self.config = Config.from_env()
+        self._apply_saved_app_settings()
         self._apply_saved_game_settings()
         self.memory = MemoryStore(self.config)
         self.active_profile_id = get_active_profile_id()
@@ -995,6 +1070,152 @@ class Api:
             self.game_agent.set_goal(user_text.strip())
             return f"Got it — doing that in-game now: {user_text.strip()}"
         return None
+
+    # ── general settings (Settings panel) ───────────────────────────────────────
+
+    def _ollama_base(self) -> str:
+        url = (self.config.llm_api_url if self.config else "") or ""
+        # OLLAMA_API_URL env wins for the local daemon base.
+        env_url = os.environ.get("OLLAMA_API_URL", "")
+        for candidate in (env_url, url, "http://127.0.0.1:11434/api/chat"):
+            if candidate and "/api/" in candidate:
+                return candidate.split("/api/")[0].rstrip("/")
+        return "http://127.0.0.1:11434"
+
+    def _reresolve_llm_url(self) -> None:
+        """Recompute llm_api_url after a provider/url change."""
+        from .config import resolve_llm_api_url
+
+        provider = self.config.llm_provider
+        if provider == "ollama":
+            raw = os.environ.get("OLLAMA_API_URL") or "http://127.0.0.1:11434/api/chat"
+        elif provider == "openai":
+            raw = self.config.llm_api_url or os.environ.get("OPENAI_API_URL")
+        else:
+            raw = None
+        self.config.llm_api_url = resolve_llm_api_url(provider, raw)
+
+    def _apply_saved_app_settings(self) -> None:
+        if not self.config:
+            return
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("app_settings", "{}") or "{}")
+        except Exception:
+            return
+        for key, val in store.items():
+            ftype = _APP_FIELD_TYPES.get(key)
+            if ftype is not None:
+                try:
+                    setattr(self.config, key, _coerce_game_setting(val, ftype))
+                except Exception:
+                    pass
+        self._reresolve_llm_url()
+
+    def get_app_settings(self) -> dict[str, Any]:
+        sections: dict[str, Any] = {}
+        for name, meta in APP_SETTINGS_SCHEMA.items():
+            fields = []
+            for f in meta["fields"]:
+                val = getattr(self.config, f["key"], "") if self.config else ""
+                if val is None:
+                    val = ""
+                fields.append({**f, "value": val})
+            sections[name] = {"label": meta["label"], "fields": fields}
+        return {"sections": sections}
+
+    def save_app_settings(self, section: str, values: dict[str, Any]) -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        meta = APP_SETTINGS_SCHEMA.get(section)
+        if not meta:
+            return {"ok": False, "msg": f"Unknown section: {section}"}
+        applied: dict[str, Any] = {}
+        for f in meta["fields"]:
+            if f["key"] in (values or {}):
+                coerced = _coerce_game_setting(values[f["key"]], f["type"])
+                setattr(self.config, f["key"], coerced)
+                applied[f["key"]] = list(coerced) if isinstance(coerced, tuple) else coerced
+        if section == "llm":
+            self._reresolve_llm_url()
+            if self.memory:
+                self.memory.config = self.config  # pick up new embedding settings
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("app_settings", "{}") or "{}")
+            store.update(applied)
+            database.set_state("app_settings", json.dumps(store))
+        except Exception:
+            pass
+        self._push_state()
+        return {"ok": True, "msg": "Settings saved."}
+
+    # ── model auto-detect ───────────────────────────────────────────────────────
+
+    _VISION_HINTS = ("llava", "moondream", "vision", "bakllava", "minicpm-v",
+                     "qwen2-vl", "qwen2.5vl", "janus", "llama3.2-vision")
+    _EMBED_HINTS = ("embed", "bge-", "bge:", "nomic-embed", "all-minilm", "minilm",
+                    "gte-", "e5-", "mxbai-embed", "snowflake-arctic-embed", "embeddinggemma")
+
+    @classmethod
+    def _categorize_model(cls, name: str) -> str:
+        ln = name.lower()
+        if any(h in ln for h in cls._EMBED_HINTS) or "embedding" in ln:
+            return "embedding"
+        if any(h in ln for h in cls._VISION_HINTS):
+            return "vision"
+        return "chat"
+
+    def _ollama_tags(self) -> list[str]:
+        try:
+            resp = requests.get(self._ollama_base() + "/api/tags", timeout=5)
+            resp.raise_for_status()
+            return [m.get("name", "") for m in resp.json().get("models", []) if m.get("name")]
+        except Exception:
+            return []
+
+    def _openai_models(self) -> list[str]:
+        if not self.config or self.config.llm_provider != "openai":
+            return []
+        base = self.config.llm_api_url.split("/chat/completions")[0].rstrip("/")
+        if base.endswith("/v1"):
+            url = base + "/models"
+        else:
+            url = base + "/v1/models"
+        headers = {}
+        if self.config.llm_api_key:
+            headers["Authorization"] = f"Bearer {self.config.llm_api_key}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=8)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data", data if isinstance(data, list) else [])
+            return [m.get("id", "") for m in items if isinstance(m, dict) and m.get("id")]
+        except Exception:
+            return []
+
+    def get_models(self) -> dict[str, Any]:
+        """Auto-detect available models, grouped by category (chat/vision/embedding)."""
+        buckets: dict[str, set] = {"chat": set(), "vision": set(), "embedding": set()}
+        # Local Ollama always provides vision/embedding (and chat) candidates.
+        for name in self._ollama_tags():
+            buckets[self._categorize_model(name)].add(name)
+        provider = self.config.llm_provider if self.config else "ollama"
+        if provider == "openai":
+            for name in self._openai_models():
+                buckets[self._categorize_model(name)].add(name)
+        elif provider == "claude-code":
+            buckets["chat"].update(["sonnet", "opus", "haiku"])
+        elif provider == "codex":
+            buckets["chat"].update(["gpt-5-codex", "gpt-5", "o4-mini"])
+        return {
+            "provider": provider,
+            "chat": sorted(buckets["chat"]),
+            "vision": sorted(buckets["vision"]),
+            "embedding": sorted(buckets["embedding"]),
+        }
 
     def _apply_saved_game_settings(self) -> None:
         """Apply game settings saved from the panel (override .env)."""
