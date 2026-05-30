@@ -156,6 +156,9 @@ class GameAgent:
                 extra_system=[framing],
                 use_shared_history=False,
                 history=list(self._log),
+                # Game replies are short JSON; cap tokens so local models (Ollama)
+                # respond fast and don't time out each tick.
+                max_tokens=256,
             )
         )
 

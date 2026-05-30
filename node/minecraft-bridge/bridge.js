@@ -42,7 +42,7 @@ const PROFILES_FOLDER = getArg('profiles-folder', 'MC_PROFILES_FOLDER',
 const VERSION = getArg('version', 'MC_VERSION', false); // false = auto-detect
 const VIEWER_PORT = parseInt(getArg('viewer-port', 'MC_VIEWER_PORT', '8768'), 10);
 const VIEWER_FIRST_PERSON =
-  String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'true')).toLowerCase() !== 'false';
+  String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'false')).toLowerCase() === 'true';
 
 let homePos = null;   // remembered home location (set_home / MC_HOME=x,y,z)
 const HOME_ARG = String(getArg('home', 'MC_HOME', ''));

@@ -28,6 +28,7 @@ class GenerationRequest:
     use_shared_history: bool = True
     history: list[dict[str, str]] | None = None
     speaker_label: str | None = None
+    max_tokens: int | None = None  # cap reply length (smaller = faster, e.g. game)
 
 
 @dataclass
@@ -89,6 +90,7 @@ def generate_reply(req: GenerationRequest) -> GenerationResult:
         extra_system=req.extra_system or None,
         history=history,
         speaker_label=req.speaker_label,
+        max_tokens=req.max_tokens,
     )
     combined = f"{req.user_text} {reply}"
     return GenerationResult(
