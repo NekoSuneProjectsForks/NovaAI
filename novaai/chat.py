@@ -542,11 +542,15 @@ def _request_cli_reply(
             # shell=True lets Windows resolve .cmd/.ps1 shims (claude/codex are
             # usually npm-installed .cmd wrappers). Args here are flags only;
             # the prompt goes through stdin, so there is nothing to mis-quote.
+            # encoding=utf-8 is required: the default Windows locale (cp1252)
+            # would mangle emoji/smart quotes and the CLIs expect UTF-8 stdin.
             completed = subprocess.run(
                 subprocess.list2cmdline(parts),
                 input=stdin_input,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=config.request_timeout,
                 shell=True,
                 cwd=run_cwd,
@@ -557,6 +561,8 @@ def _request_cli_reply(
                 input=stdin_input,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=config.request_timeout,
                 cwd=run_cwd,
             )
