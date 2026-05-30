@@ -180,6 +180,21 @@ function isHostile(entity) {
   return entity && entity.name && HOSTILES.has(String(entity.name).toLowerCase());
 }
 
+function nearestVillager(maxDist) {
+  maxDist = maxDist || 16;
+  let best = null;
+  let bestD = maxDist;
+  for (const id in bot.entities) {
+    const e = bot.entities[id];
+    if (!e || !e.position) continue;
+    if (String(e.name || '').toLowerCase() === 'villager') {
+      const d = e.position.distanceTo(bot.entity.position);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+  }
+  return best;
+}
+
 function nearestHostile(maxDist) {
   maxDist = maxDist || 12;
   let best = null;
@@ -753,6 +768,154 @@ async function act(verb, args) {
           } catch (e) { /* skip */ }
         }
         return { ok: planted > 0, message: planted ? `planted ${planted} sapling(s)` : 'no open ground to plant on' };
+      }
+
+      // ── smelting ─────────────────────────────────────────────────────────
+      case 'smelt': {
+        const inputName = String(args.input || args.name || '').toLowerCase();
+        if (!inputName) return { ok: false, message: 'need an input (e.g. raw_iron)' };
+        const fb = bot.findBlock({ matching: idsForNames(['furnace', 'blast_furnace', 'smoker']), maxDistance: 16 });
+        if (!fb) return { ok: false, message: 'no furnace nearby (craft & place one first)' };
+        await bot.pathfinder.goto(new goals.GoalNear(fb.position.x, fb.position.y, fb.position.z, 2));
+        const input = findInventory(inputName);
+        if (!input) return { ok: false, message: `no ${inputName} to smelt` };
+        const furnace = await bot.openFurnace(bot.blockAt(fb.position));
+        try {
+          // Grab any finished output first to free the slot.
+          try { if (furnace.outputItem()) await furnace.takeOutput(); } catch (e) { /* ignore */ }
+          const count = args.count !== undefined ? Math.min(Number(args.count), input.count) : input.count;
+          await furnace.putInput(input.type, null, count);
+          const fuelName = String(args.fuel || '').toLowerCase();
+          const fuel = fuelName ? findInventory(fuelName) : findInventory('coal', 'charcoal', 'coal_block');
+          let fueled = false;
+          if (fuel) {
+            const need = Math.max(1, Math.ceil(count / 8));
+            await furnace.putFuel(fuel.type, null, Math.min(need, fuel.count));
+            fueled = true;
+          }
+          furnace.close();
+          return {
+            ok: true,
+            message: `smelting ${count} ${inputName}` + (fueled ? '' : ' — NO FUEL, add coal!')
+              + ' (collect later with take_smelted)',
+          };
+        } catch (e) {
+          try { furnace.close(); } catch (_) { /* ignore */ }
+          return { ok: false, message: `smelt failed: ${(e && e.message) || e}` };
+        }
+      }
+
+      case 'take_smelted': {
+        const fb = bot.findBlock({ matching: idsForNames(['furnace', 'blast_furnace', 'smoker']), maxDistance: 16 });
+        if (!fb) return { ok: false, message: 'no furnace nearby' };
+        await bot.pathfinder.goto(new goals.GoalNear(fb.position.x, fb.position.y, fb.position.z, 2));
+        const furnace = await bot.openFurnace(bot.blockAt(fb.position));
+        try {
+          const out = furnace.outputItem();
+          if (!out) { furnace.close(); return { ok: false, message: 'nothing smelted yet — give it time' }; }
+          await furnace.takeOutput();
+          furnace.close();
+          return { ok: true, message: `collected ${out.count} ${out.name}` };
+        } catch (e) {
+          try { furnace.close(); } catch (_) { /* ignore */ }
+          return { ok: false, message: `couldn't take output: ${(e && e.message) || e}` };
+        }
+      }
+
+      // ── exploring / villages / trading ─────────────────────────────────────
+      case 'explore': {
+        const dist = Math.max(8, Math.min(128, Number(args.distance) || 48));
+        const pos = bot.entity.position;
+        let dx; let dz;
+        const dir = String(args.direction || '').toLowerCase();
+        if (dir.includes('north')) { dx = 0; dz = -1; }
+        else if (dir.includes('south')) { dx = 0; dz = 1; }
+        else if (dir.includes('east')) { dx = 1; dz = 0; }
+        else if (dir.includes('west')) { dx = -1; dz = 0; }
+        else { dx = -Math.sin(bot.entity.yaw); dz = Math.cos(bot.entity.yaw); }  // face direction
+        const tx = Math.floor(pos.x + dx * dist);
+        const tz = Math.floor(pos.z + dz * dist);
+        try {
+          await bot.pathfinder.goto(new goals.GoalNear(tx, Math.floor(pos.y), tz, 3));
+          return { ok: true, message: `explored toward ${tx}, ${tz}` };
+        } catch (e) {
+          return { ok: false, message: `couldn't path there: ${(e && e.message) || e}` };
+        }
+      }
+
+      case 'find_village':
+      case 'find_villagers': {
+        const villagers = [];
+        for (const id in bot.entities) {
+          const e = bot.entities[id];
+          if (!e || !e.position || String(e.name || '').toLowerCase() !== 'villager') continue;
+          villagers.push({
+            x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z),
+            dist: Math.round(e.position.distanceTo(bot.entity.position)),
+          });
+        }
+        villagers.sort((a, b) => a.dist - b.dist);
+        const bell = bot.findBlock({ matching: idsForNames(['bell']), maxDistance: 64 });
+        let message;
+        if (villagers.length) {
+          message = `${villagers.length} villager(s): `
+            + villagers.slice(0, 5).map((v) => `@${v.x},${v.y},${v.z} (${v.dist}m)`).join('; ');
+        } else if (bell) {
+          message = `village bell at ${bell.position.x},${bell.position.y},${bell.position.z} — go closer to load villagers`;
+        } else {
+          message = 'no village in range — explore further';
+        }
+        return { ok: villagers.length > 0 || !!bell, villagers, message };
+      }
+
+      case 'list_trades': {
+        const v = nearestVillager(args.range || 16);
+        if (!v) return { ok: false, message: 'no villager nearby (explore/come to one first)' };
+        await bot.pathfinder.goto(new goals.GoalNear(v.position.x, v.position.y, v.position.z, 2));
+        const win = await bot.openVillager(v);
+        try {
+          const trades = (win.trades || []).map((t, i) => {
+            const ins = [t.inputItem1, t.inputItem2].filter(Boolean)
+              .map((it) => `${it.count}x ${it.name || it.displayName || it.type}`).join(' + ');
+            const out = t.outputItem
+              ? `${t.outputItem.count}x ${t.outputItem.name || t.outputItem.displayName}` : '?';
+            return `[${i}] ${ins} -> ${out}${t.tradeDisabled ? ' (out of stock)' : ''}`;
+          });
+          win.close();
+          return { ok: true, trades, message: trades.length ? trades.join(' | ') : 'this villager has no trades' };
+        } catch (e) {
+          try { win.close(); } catch (_) { /* ignore */ }
+          return { ok: false, message: `couldn't read trades: ${(e && e.message) || e}` };
+        }
+      }
+
+      case 'trade': {
+        const v = nearestVillager(args.range || 16);
+        if (!v) return { ok: false, message: 'no villager nearby' };
+        await bot.pathfinder.goto(new goals.GoalNear(v.position.x, v.position.y, v.position.z, 2));
+        const win = await bot.openVillager(v);
+        try {
+          let index = args.index;
+          if ((index === undefined || index === null) && (args.item || args.want)) {
+            const want = String(args.item || args.want).toLowerCase();
+            index = (win.trades || []).findIndex(
+              (t) => t.outputItem && String(t.outputItem.name || '').includes(want));
+          }
+          if (index === undefined || index === null || index < 0) {
+            win.close();
+            return { ok: false, message: 'specify a trade index (use list_trades) or a valid item' };
+          }
+          const trade = (win.trades || [])[index];
+          if (!trade) { win.close(); return { ok: false, message: `no trade #${index}` }; }
+          if (trade.tradeDisabled) { win.close(); return { ok: false, message: `trade #${index} is out of stock` }; }
+          const count = Math.max(1, Number(args.count) || 1);
+          await bot.trade(win, index, count);
+          win.close();
+          return { ok: true, message: `traded #${index} x${count}` };
+        } catch (e) {
+          try { win.close(); } catch (_) { /* ignore */ }
+          return { ok: false, message: `trade failed: ${(e && e.message) || e}` };
+        }
       }
 
       case 'defend':
