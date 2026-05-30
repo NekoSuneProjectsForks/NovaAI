@@ -278,6 +278,7 @@ class Api:
         self._last_amplitude_emit = 0.0
         # Game agent
         self.game_agent: Any = None
+        self.game_driver_key: str | None = None  # the actually-running driver
 
     def initialize(self) -> dict[str, Any]:
         """Heavy init — called from JS once the loading screen is visible."""
