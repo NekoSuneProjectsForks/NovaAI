@@ -43,6 +43,7 @@ const VERSION = getArg('version', 'MC_VERSION', false); // false = auto-detect
 const VIEWER_PORT = parseInt(getArg('viewer-port', 'MC_VIEWER_PORT', '8768'), 10);
 const VIEWER_FIRST_PERSON =
   String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'false')).toLowerCase() === 'true';
+const VIEWER_VERSION = String(getArg('viewer-version', 'MC_VIEWER_VERSION', '')).trim();
 
 let homePos = null;   // remembered home location (set_home / MC_HOME=x,y,z)
 const HOME_ARG = String(getArg('home', 'MC_HOME', ''));
@@ -107,13 +108,37 @@ function startViewer() {
       + 'Run `npm install` in node/minecraft-bridge (it needs prismarine-viewer + canvas).');
     return;
   }
+  // The viewer's textures lag the newest MC. If the server version isn't in the
+  // viewer's supported list, render with the highest supported one (e.g. 1.21.4
+  // for a 1.21.11 server) so textures load instead of showing broken blocks.
+  let assetVersion = bot.version;
   try {
-    mineflayerViewer(bot, { port: VIEWER_PORT, firstPerson: VIEWER_FIRST_PERSON });
+    const supported = require('prismarine-viewer').supportedVersions || [];
+    if (VIEWER_VERSION) {
+      assetVersion = VIEWER_VERSION;
+    } else if (supported.length && !supported.includes(bot.version)) {
+      assetVersion = supported[supported.length - 1];
+    }
+  } catch (e) { /* keep bot.version */ }
+
+  const viewerBot = assetVersion === bot.version
+    ? bot
+    : new Proxy(bot, { get(t, p) { return p === 'version' ? assetVersion : t[p]; } });
+  const opts = { port: VIEWER_PORT, firstPerson: VIEWER_FIRST_PERSON, viewDistance: 6 };
+  try {
+    mineflayerViewer(viewerBot, opts);
     viewerStarted = true;
     log(`live view ready at http://127.0.0.1:${VIEWER_PORT} `
-      + `(${VIEWER_FIRST_PERSON ? 'first' : 'third'}-person)`);
+      + `(${VIEWER_FIRST_PERSON ? 'first' : 'third'}-person, assets ${assetVersion}`
+      + `${assetVersion !== bot.version ? ` for server ${bot.version}` : ''})`);
   } catch (e) {
-    log('live view failed to start: ' + ((e && e.message) || e));
+    try {
+      mineflayerViewer(bot, opts);   // fall back to the real version
+      viewerStarted = true;
+      log(`live view ready at http://127.0.0.1:${VIEWER_PORT} (native ${bot.version})`);
+    } catch (e2) {
+      log('live view failed to start: ' + ((e2 && e2.message) || e2));
+    }
   }
 }
 

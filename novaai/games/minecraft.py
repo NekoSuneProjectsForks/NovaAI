@@ -79,6 +79,8 @@ class MinecraftDriver:
             "--viewer-port", str(self.config.mc_viewer_port),
             "--viewer-first-person", "true" if self.config.mc_viewer_first_person else "false",
         ]
+        if self.config.mc_viewer_version:
+            env_args += ["--viewer-version", str(self.config.mc_viewer_version)]
         if self.config.mc_home:
             env_args += ["--home", str(self.config.mc_home)]
 
