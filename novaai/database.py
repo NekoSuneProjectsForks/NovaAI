@@ -19,18 +19,58 @@ DB_PATH = DATA_DIR / "novaai.db"
 _local = threading.local()
 
 
+def _open_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.row_factory = sqlite3.Row
+        _ensure_schema(conn)
+    except Exception:
+        # Release the handle so a corrupt file can be renamed/removed on Windows.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
+    return conn
+
+
+def _quarantine_corrupt_db() -> None:
+    """Move a corrupt DB (and its WAL/SHM) aside so a fresh one can be created."""
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(DB_PATH) + suffix)
+        if path.exists():
+            try:
+                backup = Path(str(path) + ".corrupt")
+                if backup.exists():
+                    backup.unlink()
+                path.rename(backup)
+            except OSError:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
 def get_connection() -> sqlite3.Connection:
-    """Return a thread-local SQLite connection, creating the DB if needed."""
+    """Return a thread-local SQLite connection, creating the DB if needed.
+
+    If the database file is corrupt (e.g. a stale/deleted WAL), it is moved aside
+    and recreated rather than letting the error bubble up and brick startup. The
+    caller's normal migration/seed path then repopulates it from the legacy JSON.
+    """
     conn: sqlite3.Connection | None = getattr(_local, "conn", None)
     if conn is not None:
         return conn
     DATA_DIR.mkdir(exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.row_factory = sqlite3.Row
+    try:
+        conn = _open_connection()
+    except sqlite3.DatabaseError:
+        # Corrupt / not-a-database: quarantine and rebuild once.
+        _quarantine_corrupt_db()
+        conn = _open_connection()
     _local.conn = conn
-    _ensure_schema(conn)
     return conn
 
 
@@ -58,6 +98,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_history_ts ON history(timestamp);
+
+        CREATE TABLE IF NOT EXISTS memories (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id TEXT    NOT NULL,
+            source     TEXT    NOT NULL DEFAULT 'chat',
+            speaker    TEXT    NOT NULL DEFAULT '',
+            content    TEXT    NOT NULL,
+            embedding  BLOB,
+            score      REAL    NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mem_profile ON memories(profile_id);
     """)
     conn.commit()
 
@@ -191,6 +244,64 @@ def history_row_count() -> int:
     conn = get_connection()
     row = conn.execute("SELECT COUNT(*) AS cnt FROM history").fetchone()
     return row["cnt"] if row else 0
+
+
+# ── memory helpers ─────────────────────────────────────────────────────────
+
+def insert_memory(
+    profile_id: str,
+    source: str,
+    speaker: str,
+    content: str,
+    embedding: bytes | None,
+    score: float,
+    created_at: str,
+) -> int:
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO memories(profile_id, source, speaker, content, embedding, score, created_at) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?)",
+        (profile_id, source, speaker, content, embedding, score, created_at),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def fetch_memories_for_profile(profile_id: str) -> list[dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, source, speaker, content, embedding, score, created_at "
+        "FROM memories WHERE profile_id=? ORDER BY id DESC",
+        (profile_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def bump_memory_score(memory_id: int, delta: float) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE memories SET score = score + ? WHERE id=?",
+        (delta, memory_id),
+    )
+    conn.commit()
+
+
+def delete_memory(memory_id: int) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+    conn.commit()
+
+
+def prune_low_memories(profile_id: str, min_score: float, keep_recent: int) -> int:
+    """Delete memories below *min_score*, except the *keep_recent* newest rows."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "DELETE FROM memories WHERE profile_id=? AND score < ? AND id NOT IN "
+        "(SELECT id FROM memories WHERE profile_id=? ORDER BY id DESC LIMIT ?)",
+        (profile_id, min_score, profile_id, keep_recent),
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 # ── migration: import from legacy JSON files ──────────────────────────────

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 from urllib.parse import urlparse
 
@@ -8,6 +13,8 @@ import requests
 
 from .config import Config
 from .storage import read_recent_history
+
+CLI_PROVIDERS = {"claude-code", "codex", "cli"}
 
 PLACEHOLDER_PATTERN = re.compile(r"\[[^\]\n]{3,120}\]")
 RAW_URL_PATTERN = re.compile(r"(?i)(?:<\s*)?(?:https?://|www\.)[^\s>]+(?:\s*>)?")
@@ -459,14 +466,148 @@ def _request_openai_compatible_reply(
         ) from exc
 
 
+def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
+    """Flatten chat messages into a single prompt for a CLI that takes text."""
+    system_parts: list[str] = []
+    convo: list[str] = []
+    for message in messages:
+        role = message.get("role")
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        if role == "system":
+            system_parts.append(content)
+        elif role == "assistant":
+            convo.append(f"Assistant: {content}")
+        else:
+            convo.append(f"User: {content}")
+    prompt = ""
+    if system_parts:
+        prompt += "\n\n".join(system_parts).strip() + "\n\n"
+    prompt += "\n".join(convo) + "\nAssistant:"
+    return prompt
+
+
+def _resolve_cli(name: str) -> str:
+    return shutil.which(name) or name
+
+
+def _cli_command_parts(config: Config) -> list[str]:
+    """Build the argv for the configured CLI (without the prompt)."""
+    if config.llm_cli_command:
+        return shlex.split(config.llm_cli_command, posix=(os.name != "nt"))
+
+    provider = config.llm_provider
+    if provider == "claude-code":
+        exe = _resolve_cli(config.claude_cli_path or "claude")
+        parts = [exe, "-p", "--output-format", "text"]
+        if config.cli_model:
+            parts += ["--model", config.cli_model]
+        return parts
+    if provider == "codex":
+        exe = _resolve_cli(config.codex_cli_path or "codex")
+        # --skip-git-repo-check: we run in a temp cwd (not a git repo), which codex
+        # otherwise refuses. exec reads the prompt from stdin.
+        parts = [exe, "exec", "--skip-git-repo-check"]
+        if config.cli_model:
+            parts += ["--model", config.cli_model]
+        return parts
+    raise RuntimeError(
+        "No CLI command configured. Set LLM_CLI_COMMAND in your .env."
+    )
+
+
+def _request_cli_reply(
+    user_text: str,
+    config: Config,
+    messages: list[dict[str, str]],
+    web_context: str | None,
+) -> str:
+    prompt = _messages_to_prompt(messages)
+    parts = _cli_command_parts(config)
+    if not parts:
+        raise RuntimeError("The LLM CLI command is empty.")
+
+    # If the command template contains {prompt}, substitute it; otherwise feed
+    # the prompt via stdin (avoids argument-length and shell-quoting issues).
+    if any("{prompt}" in part for part in parts):
+        parts = [part.replace("{prompt}", prompt) for part in parts]
+        stdin_input: str | None = None
+    else:
+        stdin_input = prompt
+
+    run_cwd = tempfile.gettempdir()
+    try:
+        if os.name == "nt":
+            # shell=True lets Windows resolve .cmd/.ps1 shims (claude/codex are
+            # usually npm-installed .cmd wrappers). Args here are flags only;
+            # the prompt goes through stdin, so there is nothing to mis-quote.
+            # encoding=utf-8 is required: the default Windows locale (cp1252)
+            # would mangle emoji/smart quotes and the CLIs expect UTF-8 stdin.
+            completed = subprocess.run(
+                subprocess.list2cmdline(parts),
+                input=stdin_input,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=config.request_timeout,
+                shell=True,
+                cwd=run_cwd,
+            )
+        else:
+            completed = subprocess.run(
+                parts,
+                input=stdin_input,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=config.request_timeout,
+                cwd=run_cwd,
+            )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Could not find the '{parts[0]}' CLI. Install it and log in once "
+            "(e.g. run `claude` or `codex` in a terminal), or set CLAUDE_CLI_PATH / "
+            "CODEX_CLI_PATH / LLM_CLI_COMMAND."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("The LLM CLI took too long to respond.") from exc
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(
+            f"The {config.llm_provider} CLI failed (exit {completed.returncode}). "
+            f"{detail[:400] or 'No output. Make sure it is installed and logged in.'}"
+        )
+
+    reply = (completed.stdout or "").strip()
+    if not reply:
+        raise RuntimeError(
+            f"The {config.llm_provider} CLI returned no output. "
+            "Make sure it is logged in and not waiting for interactive input."
+        )
+    if web_context and _contains_placeholder_markup(reply):
+        fallback_reply = _build_web_fallback_reply(user_text, web_context)
+        if fallback_reply:
+            reply = fallback_reply
+    return _strip_links_from_reply(reply)
+
+
 def request_reply(
     user_text: str,
     profile: dict[str, Any],
     config: Config,
     web_context: str | None = None,
+    extra_system: list[str] | None = None,
+    history: list[dict[str, str]] | None = None,
+    speaker_label: str | None = None,
 ) -> str:
     messages = [{"role": "system", "content": build_system_prompt(profile)}]
-    messages.extend(read_recent_history(config.history_turns))
+    messages.extend(
+        history if history is not None else read_recent_history(config.history_turns)
+    )
     if web_context:
         messages.append(
             {
@@ -483,7 +624,14 @@ def request_reply(
             }
         )
         messages.append({"role": "system", "content": web_context})
-    messages.append({"role": "user", "content": user_text})
+    for system_note in extra_system or []:
+        note = str(system_note).strip()
+        if note:
+            messages.append({"role": "system", "content": note})
+    final_user_text = (
+        f"{speaker_label}: {user_text}" if speaker_label else user_text
+    )
+    messages.append({"role": "user", "content": final_user_text})
 
     if config.llm_provider == "ollama":
         payload = {
@@ -497,5 +645,8 @@ def request_reply(
             },
         }
         return _request_ollama_reply(user_text, config, payload, web_context)
+
+    if config.llm_provider in CLI_PROVIDERS:
+        return _request_cli_reply(user_text, config, messages, web_context)
 
     return _request_openai_compatible_reply(user_text, config, messages, web_context)

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import cgi
-import html
 import json
-import shutil
+import re
 import socketserver
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
+from urllib.parse import unquote
 
 try:
     import websockets
@@ -20,17 +19,57 @@ except ImportError:  # pragma: no cover
 
 from .paths import AVATAR_UPLOADS_DIR, ROOT_DIR, STATIC_DIR
 
+# Generous cap for VRM uploads (they can be tens of MB).
+MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+
+def _extract_boundary(content_type: str) -> str | None:
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("boundary="):
+            return part[len("boundary="):].strip().strip('"')
+    return None
+
+
+def _parse_first_file(body: bytes, boundary: str) -> tuple[str | None, bytes | None]:
+    """Extract the first file part (filename + bytes) from a multipart body.
+
+    A small hand-rolled parser so we don't depend on the removed-in-3.13 ``cgi``
+    module and can read the whole body ourselves (avoids connection resets on
+    large uploads).
+    """
+    delimiter = b"--" + boundary.encode("utf-8", "ignore")
+    for segment in body.split(delimiter):
+        segment = segment.lstrip(b"\r\n")
+        if not segment or segment in (b"--", b"--\r\n"):
+            continue
+        if b"\r\n\r\n" not in segment:
+            continue
+        raw_headers, content = segment.split(b"\r\n\r\n", 1)
+        headers = raw_headers.decode("utf-8", "ignore")
+        if "filename=" not in headers.lower():
+            continue
+        match = re.search(r'filename="([^"]*)"', headers, re.IGNORECASE)
+        filename = match.group(1) if match else "upload.vrm"
+        if content.endswith(b"\r\n"):
+            content = content[:-2]
+        return filename, content
+    return None, None
+
 
 class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
     server_version = "NovaAIAvatarHTTP/1.0"
 
     def do_GET(self) -> None:
-        if self.path in {"/", "/index.html"}:
+        path = self.path.split("?", 1)[0]  # ignore query string (e.g. ?transparent=1)
+        if path in {"/", "/index.html"}:
             self._serve_file(STATIC_DIR / "avatar.html", content_type="text/html; charset=utf-8")
             return
 
-        if self.path.startswith("/uploads/"):
-            local_path = AVATAR_UPLOADS_DIR / self.path[len("/uploads/") :]
+        if path.startswith("/uploads/"):
+            raw_name = unquote(path[len("/uploads/") :])
+            # Strip any path components to prevent directory traversal.
+            local_path = AVATAR_UPLOADS_DIR / Path(raw_name).name
             self._serve_file(local_path, content_type="application/octet-stream")
             return
 
@@ -38,53 +77,92 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self.path != "/upload":
+            self._drain_body()
             self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
             return
 
         content_type = self.headers.get("Content-Type", "")
-        if "multipart/form-data" not in content_type:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            content_length = 0
+
+        if "multipart/form-data" not in content_type.lower():
+            self._drain_body(content_length)
             self.send_error(HTTPStatus.BAD_REQUEST, "Expected multipart/form-data")
             return
-
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-            },
-        )
-
-        file_item = form.getfirst("file") if not form else form.get("file")
-        if file_item is None or not getattr(file_item, "filename", None):
-            self.send_error(HTTPStatus.BAD_REQUEST, "No file uploaded")
+        if content_length <= 0:
+            self.send_error(HTTPStatus.LENGTH_REQUIRED, "Missing Content-Length")
+            return
+        if content_length > MAX_UPLOAD_BYTES:
+            self._drain_body(content_length)
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Upload too large")
             return
 
-        filename = Path(file_item.filename).name
-        filename = html.escape(filename)
-        target_path = AVATAR_UPLOADS_DIR / filename
-        target_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Read the entire body first so we never reset the connection by
+            # responding before the request is fully consumed.
+            body = self._read_exact(content_length)
+            boundary = _extract_boundary(content_type)
+            if not boundary:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing multipart boundary")
+                return
+            filename, file_data = _parse_first_file(body, boundary)
+            if not filename or file_data is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No file uploaded")
+                return
 
-        with target_path.open("wb") as output_file:
-            shutil.copyfileobj(file_item.file, output_file)
+            # URL-safe filename (no spaces/special chars) so the /uploads/ GET
+            # path matches without encoding mismatches; also blocks traversal.
+            base = Path(filename).name
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("._") or "upload.vrm"
+            target_path = AVATAR_UPLOADS_DIR / safe_name
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(file_data)
 
-        url = f"/uploads/{target_path.name}"
-        self.send_response(HTTPStatus.CREATED)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(
-            json.dumps(
-                {
-                    "success": True,
-                    "url": url,
-                    "name": target_path.name,
-                },
+            url = f"/uploads/{target_path.name}"
+            payload = json.dumps(
+                {"success": True, "url": url, "name": target_path.name},
                 ensure_ascii=False,
             ).encode("utf-8")
-        )
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
 
-        if isinstance(self.server, AvatarHttpServer):
-            self.server.on_upload(target_path)
+            if isinstance(self.server, AvatarHttpServer):
+                self.server.on_upload(target_path)
+        except Exception as exc:  # never leave the socket hanging -> avoids RST
+            try:
+                self.send_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, f"Upload failed: {exc}"
+                )
+            except Exception:
+                pass
+
+    def _read_exact(self, length: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _drain_body(self, length: int | None = None) -> None:
+        if length is None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError):
+                length = 0
+        if length and length <= MAX_UPLOAD_BYTES:
+            try:
+                self._read_exact(length)
+            except Exception:
+                pass
 
     def log_message(self, format: str, *args: object) -> None:
         # Suppress standard HTTP request logging in the GUI.
@@ -205,6 +283,17 @@ class AvatarBridge:
 
     def publish_state(self, state: dict[str, object]) -> None:
         self._broadcast({"type": "state", "payload": state})
+
+    def publish_viseme(self, mouth: float) -> None:
+        self._broadcast({"type": "viseme", "mouth": float(mouth)})
+
+    def publish_speaking(self, speaking: bool, emotion: str = "neutral") -> None:
+        self._broadcast(
+            {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
+        )
+
+    def publish_dance(self, on: bool) -> None:
+        self._broadcast({"type": "dance", "on": bool(on)})
 
     def publish_reminder(self, reminder: dict[str, object]) -> None:
         self._broadcast({"type": "reminder", "event": "due", "reminder": reminder})

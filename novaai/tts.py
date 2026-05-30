@@ -802,12 +802,25 @@ def produce_xtts_stream_chunks(
         chunk_queue.put(XTTS_STREAM_END)
 
 
+def _emit_amplitude(on_amplitude: Any, audio_chunk: np.ndarray) -> None:
+    if on_amplitude is None or audio_chunk.size == 0:
+        return
+    try:
+        rms = float(np.sqrt(np.mean(np.square(audio_chunk, dtype=np.float64))))
+        # Normalize to a roughly 0..1 mouth-open value (speech RMS is small).
+        level = max(0.0, min(1.0, rms * 6.0))
+        on_amplitude(level)
+    except Exception:
+        pass
+
+
 def stream_xtts_audio(
     text: str,
     config: Config,
     state: SessionState,
     model: TTS,
     output_path: Path,
+    on_amplitude: Any = None,
 ) -> Path:
     sample_rate = get_xtts_output_sample_rate(model)
     playback_plan = choose_output_playback_plan(
@@ -870,6 +883,7 @@ def stream_xtts_audio(
                 audio_chunk = chunk_or_end
 
             audio_chunks.append(audio_chunk)
+            _emit_amplitude(on_amplitude, audio_chunk)
             playback_chunk = (
                 stream_resampler.process(audio_chunk)
                 if stream_resampler is not None
@@ -901,7 +915,12 @@ def stream_xtts_audio(
     return write_wav_audio(output_path, audio_chunks, sample_rate)
 
 
-def speak_text(text: str, config: Config, state: SessionState) -> Path:
+def speak_text(
+    text: str,
+    config: Config,
+    state: SessionState,
+    on_amplitude: Any = None,
+) -> Path:
     cleaned_text = trim_text_for_tts(text, config.xtts_max_text_chars)
 
     if config.tts_provider == "gtts":
@@ -912,7 +931,9 @@ def speak_text(text: str, config: Config, state: SessionState) -> Path:
     model = ensure_xtts_model(config, state)
 
     if config.xtts_stream_output:
-        return stream_xtts_audio(cleaned_text, config, state, model, output_path)
+        return stream_xtts_audio(
+            cleaned_text, config, state, model, output_path, on_amplitude=on_amplitude
+        )
 
     return synthesize_xtts_to_file(cleaned_text, config, state, model, output_path)
 
@@ -926,6 +947,7 @@ def get_mci_error(error_code: int) -> str:
 def play_wav_with_sounddevice(
     audio_path: Path,
     output_device_index: int | None = None,
+    on_amplitude: Any = None,
 ) -> None:
     with wave.open(str(audio_path), "rb") as wav_file:
         channels = wav_file.getnchannels()
@@ -960,6 +982,14 @@ def play_wav_with_sounddevice(
     )
 
     try:
+        if on_amplitude is not None:
+            _play_blocks_with_amplitude(
+                playback_audio,
+                playback_plan.sample_rate,
+                playback_plan.output_device_index,
+                on_amplitude,
+            )
+            return
         sd.play(
             playback_audio,
             samplerate=playback_plan.sample_rate,
@@ -973,6 +1003,42 @@ def play_wav_with_sounddevice(
             else f"speaker #{output_device_index}"
         )
         raise RuntimeError(f"Could not play audio on {selected}. {exc}") from exc
+
+
+def _play_blocks_with_amplitude(
+    audio: np.ndarray,
+    sample_rate: int,
+    output_device_index: int | None,
+    on_amplitude: Any,
+) -> None:
+    """Play audio in blocks, emitting an RMS amplitude per block for lip-sync."""
+    data = np.ascontiguousarray(audio, dtype=np.float32)
+    if data.ndim == 1:
+        data = data.reshape(-1, 1)
+    channels = data.shape[1]
+    block = max(256, int(sample_rate * 0.05))  # ~50ms frames
+    stream = sd.OutputStream(
+        samplerate=sample_rate,
+        channels=channels,
+        dtype="float32",
+        device=output_device_index,
+    )
+    stream.start()
+    try:
+        for start in range(0, data.shape[0], block):
+            frame = data[start : start + block]
+            _emit_amplitude(on_amplitude, frame.reshape(-1))
+            stream.write(frame)
+    finally:
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        stream.close()
+        try:
+            on_amplitude(0.0)
+        except Exception:
+            pass
 
 
 def _play_with_mci(audio_path: Path) -> None:
@@ -1022,9 +1088,10 @@ def _play_with_ffplay(audio_path: Path) -> None:
 def play_audio_file(
     audio_path: Path,
     output_device_index: int | None = None,
+    on_amplitude: Any = None,
 ) -> None:
     if audio_path.suffix.lower() == ".wav":
-        play_wav_with_sounddevice(audio_path, output_device_index)
+        play_wav_with_sounddevice(audio_path, output_device_index, on_amplitude)
         return
 
     if os.name == "nt":

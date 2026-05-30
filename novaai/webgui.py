@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -20,8 +21,11 @@ from .audio_input import (
     recalibrate_microphone,
     recognize_speech,
 )
-from .chat import request_reply
+from .avatar import AvatarBridge
 from .config import Config
+from .engine import GenerationRequest, generate_reply
+from .memory import MemoryStore
+from .twitch import TwitchClient
 from .features import (
     handle_feature_request,
     check_due_reminders,
@@ -102,11 +106,24 @@ class Api:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._initialized = False
+        # Streaming (Twitch) + memory
+        self.memory: MemoryStore | None = None
+        self.twitch: TwitchClient | None = None
+        self.stream_started = False
+        self._stream_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._stream_responder_thread: threading.Thread | None = None
+        self._last_stream_reply = 0.0
+        # Avatar
+        self.avatar: AvatarBridge | None = None
+        self._last_amplitude_emit = 0.0
+        # Game agent
+        self.game_agent: Any = None
 
     def initialize(self) -> dict[str, Any]:
         """Heavy init — called from JS once the loading screen is visible."""
         ensure_runtime_dirs()
         self.config = Config.from_env()
+        self.memory = MemoryStore(self.config)
         self.active_profile_id = get_active_profile_id()
         self.profile = load_profile() or {}
         self.state = SessionState(
@@ -116,6 +133,7 @@ class Api:
         self.config.voice_enabled = False
         self.hands_free_enabled = self.config.input_mode == "voice"
         self._initialized = True
+        self._start_avatar_if_enabled()
         # Update window title with the loaded companion name
         global _window
         if _window:
@@ -335,6 +353,12 @@ class Api:
             append_history("user", user_text)
             append_history("assistant", media_action.response)
             self._push_chat(companion, media_action.response, "assistant")
+            # Dance to the music (or stop when playback stops).
+            low = user_text.lower()
+            if any(w in low for w in ("stop", "pause", "silence", "quiet", "turn off")):
+                self._avatar_dance(False)
+            elif any(w in low for w in ("play", "radio", "music", "song", "listen")):
+                self._avatar_dance(True)
             self._push_status("Media request handled.")
             return "Media request handled."
 
@@ -352,10 +376,7 @@ class Api:
             self._push_chat(companion, feature_result.response, "assistant")
             self._js("window.__onFeaturesChanged()")
             if self.state.voice_enabled and not self._stopped():
-                try:
-                    speak_text(feature_result.response, self.config, self.state)
-                except Exception:
-                    pass
+                self._speak(feature_result.response, "neutral")
             self._push_status("Ready.")
             return "Feature request handled."
 
@@ -394,7 +415,17 @@ class Api:
             return "Stopped."
 
         self._push_status("Generating reply...")
-        reply = request_reply(user_text, self.profile, self.config, web_context=web_context)
+        result = generate_reply(
+            GenerationRequest(
+                user_text=user_text,
+                profile=self.profile,
+                config=self.config,
+                source="chat",
+                web_context=web_context,
+                extra_system=self._recall(user_text),
+            )
+        )
+        reply = result.reply
 
         if self._stopped():
             self._push_status("Stopped.")
@@ -403,15 +434,11 @@ class Api:
         append_history("user", user_text)
         append_history("assistant", reply)
         self._push_chat(companion, reply, "assistant")
+        self._remember_exchange(user_name, user_text, reply, source="chat")
 
         if self.state.voice_enabled and not self._stopped():
             self._push_status("Speaking...")
-            try:
-                audio_path = speak_text(reply, self.config, self.state)
-                if should_play_audio_after_synthesis(self.config) and not self._stopped():
-                    play_audio_file(audio_path, self.config.speaker_device_index)
-            except Exception:
-                pass
+            self._speak(reply, result.emotion)
 
         if self._stopped():
             self._push_status("Stopped.")
@@ -439,6 +466,517 @@ class Api:
         with self._lock:
             self.busy = False
         self._push_state()
+
+    # ── memory (RAG) ────────────────────────────────────────────────────────────
+
+    def _recall(self, query: str) -> list[str]:
+        if not self.memory or not self.config or not self.config.rag_enabled:
+            return []
+        try:
+            memories = self.memory.recall(query, self.active_profile_id)
+        except Exception:
+            return []
+        if not memories:
+            return []
+        joined = "; ".join(memories)
+        return [f"Relevant things you remember: {joined}"]
+
+    def _remember_exchange(
+        self, speaker: str, user_text: str, reply: str, source: str
+    ) -> None:
+        if not self.memory or not self.config or not self.config.rag_enabled:
+            return
+        try:
+            self.memory.remember(
+                self.active_profile_id,
+                content=user_text,
+                source=source,
+                speaker=speaker,
+            )
+        except Exception:
+            pass
+
+    def get_memories(self) -> list[dict[str, Any]]:
+        if not self.memory:
+            return []
+        try:
+            return self.memory.list_recent(self.active_profile_id)
+        except Exception:
+            return []
+
+    def reinforce_memory(self, memory_id: int, delta: float) -> dict[str, Any]:
+        if not self.memory:
+            return {"ok": False, "msg": "Memory not ready."}
+        try:
+            self.memory.reinforce(int(memory_id), float(delta))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def forget_memory(self, memory_id: int) -> dict[str, Any]:
+        if not self.memory:
+            return {"ok": False, "msg": "Memory not ready."}
+        try:
+            self.memory.forget(int(memory_id))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    # ── streaming (Twitch) ──────────────────────────────────────────────────────
+
+    def get_stream_status(self) -> dict[str, Any]:
+        connected = bool(self.twitch and self.twitch.is_connected())
+        return {
+            "stream_started": self.stream_started,
+            "connected": connected,
+            "channel": self.config.twitch_channel if self.config else "",
+            "reply_mode": self.config.twitch_reply_mode if self.config else "mention",
+            "authenticated": bool(self.twitch and self.twitch.authenticated),
+        }
+
+    def start_stream(self) -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        if self.stream_started:
+            return {"ok": False, "msg": "Stream is already connected."}
+        if not self.config.twitch_channel:
+            return {"ok": False, "msg": "Set TWITCH_CHANNEL in your .env first."}
+        try:
+            self.twitch = TwitchClient(
+                channel=self.config.twitch_channel,
+                on_message=self._on_twitch_message,
+                bot_username=self.config.twitch_bot_username,
+                oauth_token=self.config.twitch_oauth_token,
+                on_status=lambda msg: self._push_chat("Twitch", msg, "system"),
+            )
+            self.twitch.start()
+            self.stream_started = True
+            if (
+                self._stream_responder_thread is None
+                or not self._stream_responder_thread.is_alive()
+            ):
+                self._stream_responder_thread = threading.Thread(
+                    target=self._stream_responder, daemon=True, name="NovaAIStreamResponder"
+                )
+                self._stream_responder_thread.start()
+            self._push_state()
+            return {"ok": True, "msg": f"Connecting to #{self.config.twitch_channel}..."}
+        except Exception as exc:
+            self.stream_started = False
+            return {"ok": False, "msg": str(exc)}
+
+    def stop_stream(self) -> dict[str, Any]:
+        self.stream_started = False
+        if self.twitch:
+            try:
+                self.twitch.stop()
+            except Exception:
+                pass
+        self.twitch = None
+        self._push_state()
+        return {"ok": True, "msg": "Stream disconnected."}
+
+    def _on_twitch_message(self, username: str, text: str) -> None:
+        # Show the raw chat line in the Stream feed.
+        payload = json.dumps({"username": username, "text": text})
+        self._js(f"window.__onStreamMessage({payload})")
+        if self._should_reply_to(text):
+            try:
+                self._stream_queue.put_nowait((username, text))
+            except queue.Full:
+                pass
+
+    def _should_reply_to(self, text: str) -> bool:
+        cfg = self.config
+        if not cfg:
+            return False
+        mode = cfg.twitch_reply_mode
+        lowered = text.lower()
+        if mode == "all":
+            return True
+        if mode == "command":
+            return lowered.startswith("!ask")
+        # default: mention
+        names = [cfg.twitch_bot_username]
+        if self.profile:
+            names.append(str(self.profile.get("companion_name", "")).lower())
+        return any(name and name in lowered for name in names)
+
+    def _stream_responder(self) -> None:
+        while self.stream_started:
+            try:
+                username, text = self._stream_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            now = time.time()
+            if now - self._last_stream_reply < self.config.twitch_reply_cooldown_seconds:
+                continue
+            if self.busy:
+                continue
+            self._last_stream_reply = now
+            if not self._acquire():
+                continue
+            try:
+                self._stream_pipeline(username, text)
+            except Exception:
+                pass
+            finally:
+                self._release()
+
+    def _stream_pipeline(self, username: str, text: str) -> None:
+        companion = self.profile.get("companion_name", "NovaAI")
+        # Strip a leading !ask command if present.
+        clean = text[4:].strip() if text.lower().startswith("!ask") else text
+        framing = (
+            "You are live on Twitch responding to chat. Keep replies short, punchy, and "
+            "in-character. Address the chatter by name when natural. Do not read out URLs."
+        )
+        extra = [framing] + self._recall(clean)
+        result = generate_reply(
+            GenerationRequest(
+                user_text=clean,
+                profile=self.profile,
+                config=self.config,
+                source="twitch",
+                speaker_label=f"<twitch:{username}>",
+                extra_system=extra,
+                use_shared_history=True,
+            )
+        )
+        reply = result.reply
+        append_history("user", f"[twitch:{username}] {clean}")
+        append_history("assistant", reply)
+        self._push_chat(companion, reply, "assistant")
+        self._remember_exchange(f"twitch:{username}", clean, reply, source="twitch")
+        # Optionally echo the reply back into Twitch chat if authenticated.
+        if self.twitch and self.twitch.authenticated:
+            self.twitch.send_message(reply)
+        if self.state.voice_enabled and not self._stopped():
+            self._speak(reply, result.emotion)
+
+    # ── avatar ──────────────────────────────────────────────────────────────────
+
+    def _avatar_profile_block(self) -> dict[str, Any]:
+        details = self.profile.get("profile_details")
+        if isinstance(details, dict) and isinstance(details.get("avatar"), dict):
+            return details["avatar"]
+        return {}
+
+    def _start_avatar_if_enabled(self) -> None:
+        if self.avatar is not None:
+            return
+        if not self._avatar_profile_block().get("enabled"):
+            return
+        try:
+            self.avatar = AvatarBridge(on_vrm_loaded=self._on_vrm_uploaded)
+            self.avatar.start()
+            last = self._avatar_profile_block().get("last_loaded_vrm_path") or ""
+            if last:
+                self.avatar.publish_avatar(last)
+        except Exception as exc:
+            self.avatar = None
+            self._push_chat("System", f"Avatar bridge failed to start: {exc}", "system")
+
+    def _on_vrm_uploaded(self, path: Path) -> None:
+        url = f"/uploads/{path.name}"
+        block = self._avatar_profile_block()
+        if block:
+            block["last_loaded_vrm_path"] = url
+            block["vrm_path"] = str(path)
+            try:
+                self.profile = save_profile_by_id(self.active_profile_id, self.profile)
+            except Exception:
+                pass
+        if self.avatar:
+            self.avatar.publish_avatar(url)
+
+    def _amplitude_cb(self):
+        def cb(level: float) -> None:
+            if self.avatar is None:
+                return
+            now = time.time()
+            if level > 0 and now - self._last_amplitude_emit < 0.04:
+                return
+            self._last_amplitude_emit = now
+            try:
+                self.avatar.publish_viseme(level)
+            except Exception:
+                pass
+        return cb
+
+    def _speak(self, text: str, emotion: str = "neutral") -> None:
+        """Speak text via TTS, driving avatar emotion + lip-sync if present."""
+        if self.avatar is not None:
+            try:
+                self.avatar.publish_speaking(True, emotion)
+            except Exception:
+                pass
+        cb = self._amplitude_cb() if self.avatar is not None else None
+        try:
+            audio_path = speak_text(text, self.config, self.state, on_amplitude=cb)
+            if should_play_audio_after_synthesis(self.config) and not self._stopped():
+                play_audio_file(audio_path, self.config.speaker_device_index, on_amplitude=cb)
+        except Exception:
+            pass
+        finally:
+            if self.avatar is not None:
+                try:
+                    self.avatar.publish_viseme(0.0)
+                    self.avatar.publish_speaking(False, emotion)
+                except Exception:
+                    pass
+
+    def get_avatar_status(self) -> dict[str, Any]:
+        block = self._avatar_profile_block()
+        return {
+            "enabled": bool(block.get("enabled")),
+            "running": self.avatar is not None,
+            "url": self.avatar.get_frontend_url() if self.avatar else "",
+            "last_vrm": block.get("last_loaded_vrm_path", ""),
+            "lip_sync": bool(block.get("lip_sync", True)),
+            "idle_motion": bool(block.get("idle_motion", True)),
+            "transparent_bg": bool(block.get("transparent_bg", False)),
+        }
+
+    def start_avatar(self) -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        block = self._avatar_profile_block()
+        if not block:
+            return {"ok": False, "msg": "Active profile has no avatar settings."}
+        block["enabled"] = True
+        try:
+            self.profile = save_profile_by_id(self.active_profile_id, self.profile)
+        except Exception:
+            pass
+        self._start_avatar_if_enabled()
+        return {"ok": self.avatar is not None, "url": self.avatar.get_frontend_url() if self.avatar else ""}
+
+    def stop_avatar(self) -> dict[str, Any]:
+        block = self._avatar_profile_block()
+        if block:
+            block["enabled"] = False
+            try:
+                self.profile = save_profile_by_id(self.active_profile_id, self.profile)
+            except Exception:
+                pass
+        # The bridge has no clean shutdown; leave the daemon threads but stop publishing.
+        self.avatar = None
+        return {"ok": True}
+
+    def open_avatar_window(self) -> dict[str, Any]:
+        if self.avatar is None:
+            self._start_avatar_if_enabled()
+        if self.avatar is None:
+            return {"ok": False, "msg": "Enable the avatar first."}
+        url = self.avatar.get_frontend_url()
+        block = self._avatar_profile_block()
+        if block.get("transparent_bg"):
+            url = url + "?transparent=1"
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return {"ok": True, "url": url}
+
+    def set_avatar_option(self, key: str, value: Any) -> dict[str, Any]:
+        block = self._avatar_profile_block()
+        if not block or key not in {"lip_sync", "idle_motion", "transparent_bg"}:
+            return {"ok": False, "msg": "Unknown avatar option."}
+        block[key] = bool(value)
+        try:
+            self.profile = save_profile_by_id(self.active_profile_id, self.profile)
+        except Exception:
+            pass
+        return {"ok": True}
+
+    def _avatar_dance(self, on: bool) -> None:
+        if self.avatar is not None:
+            try:
+                self.avatar.publish_dance(on)
+            except Exception:
+                pass
+
+    def set_dancing(self, on: bool) -> dict[str, Any]:
+        self._avatar_dance(bool(on))
+        return {"ok": True, "dancing": bool(on)}
+
+    def test_avatar_emotion(self, emotion: str) -> dict[str, Any]:
+        if self.avatar is None:
+            return {"ok": False, "msg": "Avatar not running."}
+        try:
+            self.avatar.publish_state({"emotion": emotion, "danger": False})
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    # ── game agent ────────────────────────────────────────────────────────────
+
+    def _game_narrate(self, text: str, emotion: str = "neutral") -> None:
+        companion = self.profile.get("companion_name", "NovaAI")
+        self._push_chat(companion, text, "assistant")
+        # Echo to Twitch chat if connected + authenticated.
+        if self.twitch and self.twitch.authenticated:
+            try:
+                self.twitch.send_message(text)
+            except Exception:
+                pass
+        # Speak only when not busy with a chat/stream turn (don't block them).
+        if self.state.voice_enabled:
+            if self._acquire():
+                try:
+                    self._speak(text, emotion)
+                finally:
+                    self._release()
+
+    def _game_update(self, raw: dict[str, Any]) -> None:
+        try:
+            self._js(f"window.__onGameUpdate({json.dumps(raw)})")
+        except Exception:
+            pass
+
+    def _game_remember(self, content: str) -> None:
+        if self.memory and self.config and self.config.rag_enabled:
+            try:
+                self.memory.remember(self.active_profile_id, content, source="game", speaker="game")
+            except Exception:
+                pass
+
+    def get_game_status(self) -> dict[str, Any]:
+        running = bool(self.game_agent and self.game_agent.is_running())
+        return {
+            "running": running,
+            "driver": self.config.game_driver if self.config else "minecraft",
+            "goal": self.game_agent.goal if self.game_agent else "",
+        }
+
+    def _build_game_driver(self, driver_name: str):
+        if driver_name == "minecraft":
+            from .games.minecraft import MinecraftDriver
+
+            return MinecraftDriver(
+                self.config,
+                on_log=lambda line: self._push_chat("Minecraft", line, "system"),
+            )
+        if driver_name == "universal":
+            from .games.universal import UniversalGameDriver
+
+            return UniversalGameDriver(self.config)
+        if driver_name == "osu":
+            from .games.osu import OsuDriver
+
+            return OsuDriver(self.config)
+        if driver_name == "factorio":
+            from .games.factorio import FactorioDriver
+
+            return FactorioDriver(self.config)
+        if driver_name == "vrchat":
+            from .games.vrchat import VRChatDriver
+
+            return VRChatDriver(self.config)
+        return None
+
+    def start_game(self, goal: str = "", driver: str = "") -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        if self.game_agent and self.game_agent.is_running():
+            return {"ok": False, "msg": "Game agent is already running."}
+        try:
+            from .games.agent import GameAgent
+
+            driver_name = (driver or self.config.game_driver or "minecraft").strip().lower()
+            game_driver = self._build_game_driver(driver_name)
+            if game_driver is None:
+                return {"ok": False, "msg": f"Unknown game driver: {driver_name}"}
+            if driver_name == "osu" and not self.config.osu_allow_online:
+                self._push_chat(
+                    "System",
+                    "osu! automation on official servers is bannable. Running in "
+                    "OFFLINE/solo mode only. Use at your own risk.",
+                    "system",
+                )
+
+            self.game_agent = GameAgent(
+                driver=game_driver,
+                config=self.config,
+                profile_getter=lambda: self.profile,
+                narrate=self._game_narrate,
+                on_update=self._game_update,
+                remember=self._game_remember,
+                tick_seconds=self.config.game_tick_seconds,
+                goal=(goal.strip() or "explore and survive"),
+            )
+            self.game_agent.start()
+            return {"ok": True, "msg": "Game agent started."}
+        except Exception as exc:
+            self.game_agent = None
+            return {"ok": False, "msg": str(exc)}
+
+    def stop_game(self) -> dict[str, Any]:
+        if self.game_agent:
+            try:
+                self.game_agent.stop()
+            except Exception:
+                pass
+        return {"ok": True, "msg": "Game agent stopping."}
+
+    def set_game_goal(self, goal: str) -> dict[str, Any]:
+        if not self.game_agent:
+            return {"ok": False, "msg": "Game agent is not running."}
+        self.game_agent.set_goal(goal)
+        return {"ok": True}
+
+    # ── singing ─────────────────────────────────────────────────────────────────
+
+    def get_singing_status(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.config.singing_enabled) if self.config else False,
+            "backend": self.config.singing_backend if self.config else "cloud",
+        }
+
+    def sing(self, lyrics: str, melody_ref: str = "") -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        if not self.config.singing_enabled:
+            return {"ok": False, "msg": "Singing is disabled. Set SINGING_ENABLED=true in .env."}
+        if not lyrics or not lyrics.strip():
+            return {"ok": False, "msg": "Give me some lyrics to sing."}
+
+        def _job() -> None:
+            if not self._acquire():
+                return
+            try:
+                from .singing import make_singing_engine
+
+                self._push_status("Composing a song...")
+                engine = make_singing_engine(self.config)
+                path = engine.sing(lyrics.strip(), melody_ref.strip() or None)
+                if self.avatar is not None:
+                    try:
+                        self.avatar.publish_speaking(True, "happy")
+                    except Exception:
+                        pass
+                self._avatar_dance(True)
+                cb = self._amplitude_cb() if self.avatar is not None else None
+                self._push_status("Singing...")
+                play_audio_file(path, self.config.speaker_device_index, on_amplitude=cb)
+            except Exception as exc:
+                self._push_chat("System", f"Singing failed: {exc}", "system")
+            finally:
+                self._avatar_dance(False)
+                if self.avatar is not None:
+                    try:
+                        self.avatar.publish_viseme(0.0)
+                        self.avatar.publish_speaking(False, "happy")
+                    except Exception:
+                        pass
+                self._release()
+                self._push_status("Ready.")
+
+        threading.Thread(target=_job, daemon=True).start()
+        return {"ok": True, "msg": "Singing..."}
 
     # ── reminders ─────────────────────────────────────────────────────────────
 
@@ -724,12 +1262,7 @@ class Api:
         """Speak an alert message via TTS if voice is enabled."""
         if not self._initialized or not self.config:
             return
-        try:
-            audio_path = speak_text(text, self.config, self.state)
-            if should_play_audio_after_synthesis(self.config):
-                play_audio_file(audio_path, self.config.speaker_device_index)
-        except Exception:
-            pass
+        self._speak(text, "neutral")
 
     def start_reminder_checker(self) -> None:
         def _checker():

@@ -98,10 +98,31 @@ def resolve_git_executable() -> str | None:
     return None
 
 
+def normalize_repo_slug(value: str) -> str:
+    """Normalize a configured repo value to an ``owner/repo`` slug.
+
+    Accepts a bare slug (``owner/repo``), an HTTPS URL
+    (``https://github.com/owner/repo[.git]``), or an SSH URL
+    (``git@github.com:owner/repo.git``).
+    """
+    trimmed = value.strip()
+    if not trimmed:
+        return DEFAULT_GITHUB_REPO
+    # Full URL / SSH form -> extract owner/repo.
+    parsed = parse_repo_slug_from_remote(trimmed)
+    if parsed:
+        return parsed
+    # Otherwise treat it as an already-clean slug; just tidy it.
+    trimmed = trimmed.strip("/")
+    if trimmed.endswith(".git"):
+        trimmed = trimmed[:-4]
+    return trimmed or DEFAULT_GITHUB_REPO
+
+
 def discover_repo_slug() -> str:
     configured = os.getenv("NOVA_GITHUB_REPO", "").strip()
     if configured:
-        return configured
+        return normalize_repo_slug(configured)
 
     if not (ROOT_DIR / ".git").exists():
         return DEFAULT_GITHUB_REPO

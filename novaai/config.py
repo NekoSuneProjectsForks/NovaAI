@@ -53,6 +53,19 @@ def normalize_stt_provider(value: str) -> str:
 def normalize_llm_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {
+        "claude",
+        "claude-code",
+        "claudecode",
+        "claude-cli",
+        "claude_code",
+        "anthropic-cli",
+    }:
+        return "claude-code"
+    if normalized in {"codex", "codex-cli", "codex_cli", "openai-codex"}:
+        return "codex"
+    if normalized in {"cli", "custom-cli", "command", "shell"}:
+        return "cli"
+    if normalized in {
         "openai",
         "chatgpt",
         "openai-compatible",
@@ -68,6 +81,22 @@ def normalize_llm_provider(value: str) -> str:
     }:
         return "openai"
     return "ollama"
+
+
+def resolve_model_label(
+    provider: str,
+    explicit_model: str | None,
+    ollama_default: str,
+    cli_model: str | None,
+) -> str:
+    if provider in {"claude-code", "codex", "cli"}:
+        defaults = {
+            "claude-code": "Claude Code (CLI)",
+            "codex": "Codex (CLI)",
+            "cli": "Custom CLI",
+        }
+        return cli_model or defaults.get(provider, provider)
+    return explicit_model or ollama_default
 
 
 def normalize_web_safesearch(value: str) -> str:
@@ -125,6 +154,28 @@ def normalize_tts_provider(value: str) -> str:
     if normalized in {"gtts", "google-tts", "google_tts", "google"}:
         return "gtts"
     return "xtts"
+
+
+def normalize_twitch_reply_mode(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"all", "everything", "every"}:
+        return "all"
+    if normalized in {"command", "commands", "!ask", "cmd"}:
+        return "command"
+    return "mention"
+
+
+def normalize_rag_embedding_provider(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"openai", "openai-compatible", "api", "remote"}:
+        return "openai"
+    return "local"
+
+
+def normalize_twitch_channel(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip().lstrip("#").lower()
 
 
 def resolve_llm_api_url(provider: str, raw_url: str | None) -> str:
@@ -194,6 +245,10 @@ class Config:
     llm_api_key: str | None
     llm_keep_alive: str
     llm_num_predict: int
+    llm_cli_command: str | None
+    claude_cli_path: str | None
+    codex_cli_path: str | None
+    cli_model: str | None
     tts_provider: str
     tts_language: str
     xtts_model_name: str
@@ -241,6 +296,47 @@ class Config:
     speaker_device_index: int | None
     mic_sample_rate: int | None
     mic_chunk_size: int
+    # Twitch
+    twitch_enabled: bool
+    twitch_channel: str
+    twitch_bot_username: str
+    twitch_oauth_token: str | None
+    twitch_reply_mode: str
+    twitch_reply_cooldown_seconds: float
+    # RAG memory
+    rag_enabled: bool
+    rag_embedding_provider: str
+    rag_embedding_model: str
+    rag_top_k: int
+    rag_min_score: float
+    # Game playing
+    game_enabled: bool
+    game_driver: str
+    game_tick_seconds: float
+    mc_host: str
+    mc_port: int
+    mc_username: str
+    mc_auth: str
+    mc_bridge_port: int
+    node_path: str | None
+    owner_name: str
+    mc_owner_username: str
+    mc_profiles_folder: str | None
+    mc_version: str | None
+    # Singing
+    singing_enabled: bool
+    singing_backend: str
+    rvc_model_path: str | None
+    singing_api_url: str | None
+    singing_api_key: str | None
+    # Vision (for the universal game driver) + extra game drivers
+    vision_model: str | None
+    osu_allow_online: bool
+    factorio_rcon_host: str
+    factorio_rcon_port: int
+    factorio_rcon_password: str | None
+    vrchat_osc_host: str
+    vrchat_osc_port: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -389,10 +485,11 @@ class Config:
             ),
             system_summary=describe_system_capabilities(capabilities),
             llm_provider=llm_provider,
-            model=(
-                parse_optional_str_env("LLM_MODEL")
-                or parse_optional_str_env("OPENAI_MODEL")
-                or os.getenv("OLLAMA_MODEL", "dolphin3")
+            model=resolve_model_label(
+                llm_provider,
+                parse_optional_str_env("LLM_MODEL") or parse_optional_str_env("OPENAI_MODEL"),
+                os.getenv("OLLAMA_MODEL", "dolphin3"),
+                parse_optional_str_env("LLM_CLI_MODEL"),
             ),
             llm_api_url=llm_api_url,
             llm_api_key=(
@@ -404,6 +501,10 @@ class Config:
                 or os.getenv("OLLAMA_KEEP_ALIVE", "30m")
             ),
             llm_num_predict=llm_num_predict,
+            llm_cli_command=parse_optional_str_env("LLM_CLI_COMMAND"),
+            claude_cli_path=parse_optional_str_env("CLAUDE_CLI_PATH"),
+            codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),
+            cli_model=parse_optional_str_env("LLM_CLI_MODEL"),
             tts_provider=tts_provider,
             tts_language=os.getenv("XTTS_LANGUAGE")
             or os.getenv("TTS_LANG")
@@ -487,4 +588,56 @@ class Config:
             speaker_device_index=parse_optional_int_env("SPEAKER_DEVICE_INDEX"),
             mic_sample_rate=parse_optional_int_env("MIC_SAMPLE_RATE"),
             mic_chunk_size=mic_chunk_size,
+            twitch_enabled=parse_bool_env("TWITCH_ENABLED", False),
+            twitch_channel=normalize_twitch_channel(os.getenv("TWITCH_CHANNEL")),
+            twitch_bot_username=(
+                parse_optional_str_env("TWITCH_BOT_USERNAME") or ""
+            ).lower(),
+            twitch_oauth_token=parse_optional_str_env("TWITCH_OAUTH_TOKEN"),
+            twitch_reply_mode=normalize_twitch_reply_mode(
+                os.getenv("TWITCH_REPLY_MODE", "mention")
+            ),
+            twitch_reply_cooldown_seconds=max(
+                0.0, float(os.getenv("TWITCH_REPLY_COOLDOWN", "8"))
+            ),
+            rag_enabled=parse_bool_env("RAG_ENABLED", True),
+            rag_embedding_provider=normalize_rag_embedding_provider(
+                os.getenv("RAG_EMBEDDING_PROVIDER", "local")
+            ),
+            rag_embedding_model=os.getenv(
+                "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+            ),
+            rag_top_k=max(1, min(12, int(os.getenv("RAG_TOP_K", "4")))),
+            rag_min_score=float(os.getenv("RAG_MIN_SCORE", "0.25")),
+            game_enabled=parse_bool_env("GAME_ENABLED", False),
+            game_driver=os.getenv("GAME_DRIVER", "minecraft").strip().lower() or "minecraft",
+            game_tick_seconds=max(1.0, float(os.getenv("GAME_TICK_SECONDS", "4"))),
+            mc_host=os.getenv("MC_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            mc_port=int(os.getenv("MC_PORT", "25565")),
+            mc_username=os.getenv("MC_USERNAME", "NovaAI").strip() or "NovaAI",
+            mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
+            mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
+            node_path=parse_optional_str_env("NODE_PATH"),
+            owner_name=(parse_optional_str_env("OWNER_NAME") or ""),
+            mc_owner_username=(
+                parse_optional_str_env("MC_OWNER_USERNAME")
+                or parse_optional_str_env("OWNER_NAME")
+                or ""
+            ),
+            mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
+            mc_version=parse_optional_str_env("MC_VERSION"),
+            singing_enabled=parse_bool_env("SINGING_ENABLED", False),
+            singing_backend=(
+                "rvc" if os.getenv("SINGING_BACKEND", "cloud").strip().lower() == "rvc" else "cloud"
+            ),
+            rvc_model_path=parse_optional_str_env("RVC_MODEL_PATH"),
+            singing_api_url=parse_optional_str_env("SINGING_API_URL"),
+            singing_api_key=parse_optional_str_env("SINGING_API_KEY"),
+            vision_model=parse_optional_str_env("VISION_MODEL"),
+            osu_allow_online=parse_bool_env("OSU_ALLOW_ONLINE", False),
+            factorio_rcon_host=os.getenv("FACTORIO_RCON_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            factorio_rcon_port=int(os.getenv("FACTORIO_RCON_PORT", "27015")),
+            factorio_rcon_password=parse_optional_str_env("FACTORIO_RCON_PASSWORD"),
+            vrchat_osc_host=os.getenv("VRCHAT_OSC_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            vrchat_osc_port=int(os.getenv("VRCHAT_OSC_PORT", "9000")),
         )

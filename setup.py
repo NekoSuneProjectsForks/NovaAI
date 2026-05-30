@@ -103,7 +103,7 @@ def read_llm_setup_config() -> tuple[str, str, str]:
     )
     if provider == "ollama":
         model = (
-            env_values.get("LLM_MODEL")
+            env_values.get("OLLAMA_MODEL")
             or env_values.get("OLLAMA_MODEL")
             or DEFAULT_OLLAMA_MODEL
         )
@@ -142,6 +142,34 @@ def install_requirements() -> None:
     run([str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "pip", "-q"])
     print("    Installing packages...")
     run([str(VENV_PYTHON), "-m", "pip", "install", "-r", str(REQUIREMENTS), "-q"])
+
+
+# ── Game bridge (optional) ─────────────────────────────────────────────────────
+
+def setup_minecraft_bridge() -> None:
+    """Install Node deps for the Minecraft bridge if Node is available.
+
+    Non-fatal: prints guidance and returns if Node is missing so users who
+    don't want the game feature aren't forced to install Node.js.
+    """
+    bridge_dir = ROOT_DIR / "node" / "minecraft-bridge"
+    if not (bridge_dir / "package.json").exists():
+        print("    Minecraft bridge files not found - skipping.")
+        return
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if not node or not npm:
+        print("    Node.js / npm not found - skipping game bridge install.")
+        print("    Install Node 18+ from https://nodejs.org to enable game playing,")
+        print(f"    then run: npm install (inside {bridge_dir})")
+        return
+    print(f"    Found Node: {node}")
+    try:
+        run([npm, "install"], cwd=str(bridge_dir))
+        print("    Minecraft bridge dependencies installed.")
+    except Exception as exc:
+        print(f"    Warning: npm install failed - {exc}")
+        print(f"    You can retry later with: npm install (inside {bridge_dir})")
 
 
 # ── Project files ────────────────────────────────────────────────────────────
@@ -266,7 +294,7 @@ def preload_models() -> None:
 def full_setup() -> None:
     """Run the complete setup pipeline."""
     banner("NovaAI Setup")
-    total = 8
+    total = 9
 
     step(1, total, "Checking Python virtual environment...")
     ensure_venv()
@@ -346,7 +374,17 @@ def full_setup() -> None:
         print(f"    Warning: Model preload failed — {exc}")
         print("    Models will be downloaded on first use instead.")
 
-    step(8, total, "Writing setup marker...")
+    step(8, total, "Checking game bridge (Minecraft)...")
+    game_enabled = parse_bool_value(env_values.get("GAME_ENABLED") or "false")
+    if game_enabled:
+        try:
+            setup_minecraft_bridge()
+        except Exception as exc:
+            print(f"    Warning: game bridge setup failed — {exc}")
+    else:
+        print("    GAME_ENABLED is false - skipping (enable later in .env).")
+
+    step(9, total, "Writing setup marker...")
     SETUP_MARKER.write_text(
         (
             f"setup_completed=1\n"

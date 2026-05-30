@@ -139,6 +139,9 @@ tailwind.config = {
     <div class="flex-1 py-2 overflow-y-auto">
       <button onclick="showPage('dashboard')"  data-page="dashboard"  class="nav-item active w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#9636;</span> Dashboard</button>
       <button onclick="showPage('chat')"        data-page="chat"        class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128172;</span> Chat</button>
+      <button onclick="showPage('stream')"      data-page="stream"      class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128250;</span> Stream</button>
+      <button onclick="showPage('avatar')"      data-page="avatar"      class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#129302;</span> Avatar</button>
+      <button onclick="showPage('game')"        data-page="game"        class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#127918;</span> Game</button>
       <button onclick="showPage('reminders')"   data-page="reminders"   class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128276;</span> Reminders</button>
       <button onclick="showPage('calendar')"    data-page="calendar"    class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128197;</span> Calendar</button>
       <button onclick="showPage('shopping')"    data-page="shopping"    class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128722;</span> Shopping</button>
@@ -246,6 +249,135 @@ tailwind.config = {
           <button id="chat-send-btn" onclick="doSend()" class="btn-primary px-5 py-2 rounded-lg text-[13px] font-semibold">Send</button>
           <button id="chat-stop-btn" onclick="doStop()" class="hidden bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-lg text-[13px] font-semibold" title="Stop generation (Esc)">Stop</button>
           <button id="chat-listen-btn" onclick="doListenFromChat()" class="btn-secondary px-4 py-2 rounded-lg text-[13px] font-semibold" title="Voice input (F8)">Mic</button>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- PAGE: Stream (Twitch + Memory) -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <div id="page-stream" class="page flex-col h-full overflow-y-auto p-6 gap-5">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Twitch Connection</div>
+            <span id="stream-badge" class="text-[11px] font-semibold text-nova-muted">Disconnected</span>
+          </div>
+          <div class="text-[12px] text-nova-muted mb-3">
+            Channel: <span id="stream-channel" class="text-nova-text">--</span> ·
+            Reply mode: <span id="stream-mode" class="text-nova-text">--</span>
+          </div>
+          <div class="flex gap-2">
+            <button id="stream-connect-btn" onclick="doStartStream()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Connect</button>
+            <button id="stream-disconnect-btn" onclick="doStopStream()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Disconnect</button>
+          </div>
+          <div class="text-[11px] text-nova-muted mt-3">Set TWITCH_CHANNEL (and optionally a bot username + OAuth token) in your .env file.</div>
+        </div>
+
+        <div class="card p-5">
+          <div class="text-[13px] font-bold mb-3">Sing a Song</div>
+          <div class="text-[11px] text-nova-muted mb-2">Set SINGING_ENABLED in .env. Cloud backend needs SINGING_API_URL; RVC needs a model + a vocal reference path.</div>
+          <div class="flex gap-2 mb-2">
+            <input id="sing-lyrics" type="text" placeholder="Lyrics to sing..." class="flex-1" />
+            <button onclick="doSing()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Sing</button>
+          </div>
+          <input id="sing-ref" type="text" placeholder="Optional melody/vocal .wav path (RVC)..." class="w-full" />
+        </div>
+
+        <div class="card p-5 flex-1 min-h-[180px]">
+          <div class="text-[13px] font-bold mb-3">Live Chat</div>
+          <div id="stream-feed" class="space-y-1 text-[12px] overflow-y-auto max-h-[280px]"><span class="text-nova-muted">No chat yet.</span></div>
+        </div>
+
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Memory (what NovaAI is learning)</div>
+            <button onclick="loadMemories()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
+          </div>
+          <div id="memory-list" class="space-y-1.5 text-[12px]"><span class="text-nova-muted">No memories yet.</span></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- PAGE: Avatar -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <div id="page-avatar" class="page flex-col h-full overflow-y-auto p-6 gap-5">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">VRM Avatar</div>
+            <span id="avatar-badge" class="text-[11px] font-semibold text-nova-muted">Off</span>
+          </div>
+          <div class="text-[12px] text-nova-muted mb-3">Render a VRM model that lip-syncs to NovaAI's voice and reacts with expressions. Open the avatar window to upload a .vrm and to capture it in OBS.</div>
+          <div class="flex flex-wrap gap-2">
+            <button id="avatar-enable-btn" onclick="doStartAvatar()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Enable</button>
+            <button id="avatar-disable-btn" onclick="doStopAvatar()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Disable</button>
+            <button onclick="doOpenAvatarWindow()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Open Avatar Window (upload / OBS)</button>
+          </div>
+        </div>
+
+        <div class="card p-5">
+          <div class="text-[13px] font-bold mb-3">Options</div>
+          <div class="space-y-3">
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="avatar-lipsync" onchange="doAvatarToggle('lip_sync', this.checked)" class="w-4 h-4 rounded accent-violet-500" />
+              <span class="text-[13px]">Lip-sync to voice</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="avatar-idle" onchange="doAvatarToggle('idle_motion', this.checked)" class="w-4 h-4 rounded accent-violet-500" />
+              <span class="text-[13px]">Idle motion (breathing / blink)</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="avatar-transparent" onchange="doAvatarToggle('transparent_bg', this.checked)" class="w-4 h-4 rounded accent-violet-500" />
+              <span class="text-[13px]">Transparent background (for OBS Browser Source)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card p-5">
+          <div class="text-[13px] font-bold mb-3">Test Expressions &amp; Motion</div>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="doTestEmotion('happy')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Happy</button>
+            <button onclick="doTestEmotion('sad')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Sad</button>
+            <button onclick="doTestEmotion('angry')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Angry</button>
+            <button onclick="doTestEmotion('anxious')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Anxious</button>
+            <button onclick="doTestEmotion('neutral')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Neutral</button>
+            <button onclick="doDance(true)" class="btn-primary px-3 py-1.5 rounded text-[12px]">Dance</button>
+            <button onclick="doDance(false)" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Stop Dance</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- PAGE: Game -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <div id="page-game" class="page flex-col h-full overflow-y-auto p-6 gap-5">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Game Agent (<span id="game-driver">minecraft</span>)</div>
+            <span id="game-badge" class="text-[11px] font-semibold text-nova-muted">Stopped</span>
+          </div>
+          <div class="text-[12px] text-nova-muted mb-3">NovaAI plays autonomously and narrates its thoughts in chat (and on stream/voice). Each game has its own requirements — see .env for setup.</div>
+          <div class="flex gap-2 mb-2">
+            <select id="game-driver-select" class="flex-1">
+              <option value="minecraft">Minecraft (Mineflayer + Node)</option>
+              <option value="universal">Universal (vision + keyboard) — Terraria, Unturned, Celeste, etc.</option>
+              <option value="vrchat">VRChat (official OSC)</option>
+              <option value="factorio">Factorio (RCON)</option>
+              <option value="osu">osu! (offline/solo only — ban risk!)</option>
+            </select>
+          </div>
+          <div id="game-driver-note" class="text-[11px] text-amber-400 mb-2 hidden"></div>
+          <div class="flex gap-2 mb-2">
+            <input id="game-goal" type="text" placeholder="Goal (e.g. collect wood, build a shelter)..." class="flex-1" />
+            <button onclick="doSetGameGoal()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Set Goal</button>
+          </div>
+          <div class="flex gap-2">
+            <button id="game-start-btn" onclick="doStartGame()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Start</button>
+            <button id="game-stop-btn" onclick="doStopGame()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Stop</button>
+          </div>
+        </div>
+
+        <div class="card p-5">
+          <div class="text-[13px] font-bold mb-3">Live State</div>
+          <div id="game-state" class="text-[12px] text-nova-muted space-y-1"><span>Not running.</span></div>
         </div>
       </div>
 
@@ -543,6 +675,9 @@ function dismissLoader() {
 const PAGE_META = {
   dashboard: ['Dashboard', 'Session controls and status'],
   chat:      ['Chat',      'Conversation with your companion'],
+  stream:    ['Stream',    'Twitch chat and memory'],
+  avatar:    ['Avatar',    'VRM avatar and lip-sync'],
+  game:      ['Game',      'Autonomous game playing'],
   reminders: ['Reminders', 'Reminders and alarms'],
   calendar:  ['Calendar',  'Upcoming events'],
   shopping:  ['Shopping',  'Shopping list'],
@@ -565,6 +700,9 @@ function showPage(key) {
 
   // Refresh data when switching (only after backend is ready)
   if (!_appReady) return;
+  if (key === 'stream')     loadStream();
+  if (key === 'avatar')     loadAvatar();
+  if (key === 'game')       loadGame();
   if (key === 'reminders')  loadReminders();
   if (key === 'calendar')   loadCalendar();
   if (key === 'shopping')   loadShopping();
@@ -718,6 +856,155 @@ window.__onFeaturesChanged = function() {
   if (currentPage === 'shopping')  loadShopping();
   if (currentPage === 'todo')      loadTodos();
 };
+
+// ── Stream (Twitch + Memory) ───────────────────────────────────────────────
+
+window.__onStreamMessage = function(msg) {
+  const feed = $('stream-feed');
+  if (!feed) return;
+  if (feed.children.length === 1 && feed.firstElementChild.tagName === 'SPAN') {
+    feed.innerHTML = '';
+  }
+  const row = document.createElement('div');
+  row.className = 'fade-in';
+  row.innerHTML = `<span class="text-violet-300 font-semibold">${escHtml(msg.username)}</span>: <span class="text-nova-text">${escHtml(msg.text)}</span>`;
+  feed.appendChild(row);
+  feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 200) feed.removeChild(feed.firstChild);
+};
+
+async function loadStream() {
+  try {
+    const s = await api().get_stream_status();
+    const badge = $('stream-badge');
+    badge.textContent = s.connected ? 'Connected' : (s.stream_started ? 'Connecting...' : 'Disconnected');
+    badge.className = 'text-[11px] font-semibold ' + (s.connected ? 'text-emerald-400' : 'text-nova-muted');
+    $('stream-channel').textContent = s.channel || '(not set)';
+    $('stream-mode').textContent = s.reply_mode + (s.authenticated ? ' · can post' : ' · read-only');
+  } catch(e) { console.error(e); }
+  loadMemories();
+}
+
+async function doStartStream() {
+  try { const r = await api().start_stream(); if (r && !r.ok) showNotification(r.msg); loadStream(); } catch(e) { console.error(e); }
+}
+async function doStopStream() {
+  try { await api().stop_stream(); loadStream(); } catch(e) { console.error(e); }
+}
+
+async function loadMemories() {
+  try {
+    const mems = await api().get_memories();
+    const list = $('memory-list');
+    if (!mems || !mems.length) { list.innerHTML = '<span class="text-nova-muted">No memories yet.</span>'; return; }
+    list.innerHTML = '';
+    mems.forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-2 justify-between';
+      const label = (m.speaker ? m.speaker + ': ' : '') + (m.content || '');
+      row.innerHTML = `<span class="flex-1 truncate" title="${escHtml(label)}"><span class="text-nova-muted">[${escHtml(m.source||'chat')}]</span> ${escHtml(label)}</span>
+        <span class="text-[10px] text-nova-muted">${(m.score||0).toFixed(1)}</span>
+        <button class="btn-secondary px-2 py-0.5 rounded text-[11px]" title="Good memory">+</button>
+        <button class="btn-secondary px-2 py-0.5 rounded text-[11px]" title="Bad memory">-</button>
+        <button class="btn-secondary px-2 py-0.5 rounded text-[11px]" title="Forget">x</button>`;
+      const btns = row.querySelectorAll('button');
+      btns[0].onclick = () => doReinforce(m.id, 1);
+      btns[1].onclick = () => doReinforce(m.id, -1);
+      btns[2].onclick = () => doForget(m.id);
+      list.appendChild(row);
+    });
+  } catch(e) { console.error(e); }
+}
+
+async function doReinforce(id, delta) { try { await api().reinforce_memory(id, delta); loadMemories(); } catch(e) { console.error(e); } }
+async function doForget(id) { try { await api().forget_memory(id); loadMemories(); } catch(e) { console.error(e); } }
+
+async function doSing() {
+  const lyrics = $('sing-lyrics').value;
+  const ref = $('sing-ref').value || '';
+  try { const r = await api().sing(lyrics, ref); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
+}
+
+// ── Avatar ─────────────────────────────────────────────────────────────────
+
+async function loadAvatar() {
+  try {
+    const s = await api().get_avatar_status();
+    const badge = $('avatar-badge');
+    badge.textContent = s.running ? 'Running' : (s.enabled ? 'Enabled' : 'Off');
+    badge.className = 'text-[11px] font-semibold ' + (s.running ? 'text-emerald-400' : 'text-nova-muted');
+    $('avatar-lipsync').checked = !!s.lip_sync;
+    $('avatar-idle').checked = !!s.idle_motion;
+    $('avatar-transparent').checked = !!s.transparent_bg;
+  } catch(e) { console.error(e); }
+}
+
+async function doStartAvatar() {
+  try { const r = await api().start_avatar(); if (r && !r.ok && r.msg) showNotification(r.msg); loadAvatar(); } catch(e) { console.error(e); }
+}
+async function doStopAvatar() { try { await api().stop_avatar(); loadAvatar(); } catch(e) { console.error(e); } }
+async function doOpenAvatarWindow() {
+  try { const r = await api().open_avatar_window(); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
+}
+async function doAvatarToggle(key, val) { try { await api().set_avatar_option(key, val); } catch(e) { console.error(e); } }
+async function doTestEmotion(em) { try { const r = await api().test_avatar_emotion(em); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
+async function doDance(on) { try { await api().set_dancing(on); } catch(e) { console.error(e); } }
+
+// ── Game ───────────────────────────────────────────────────────────────────
+
+window.__onGameUpdate = function(state) {
+  const el = $('game-state');
+  if (!el) return;
+  if (!state || state.connected === false) { el.innerHTML = '<span>Connecting to game...</span>'; return; }
+  const inv = (state.inventory || []).map(i => `${i.name} x${i.count}`).join(', ') || 'empty';
+  const pos = state.position || {};
+  el.innerHTML = `
+    <div>Health: <span class="text-nova-text">${state.health ?? '?'}/20</span> · Food: <span class="text-nova-text">${state.food ?? '?'}/20</span></div>
+    <div>Position: <span class="text-nova-text">x${pos.x ?? '?'} y${pos.y ?? '?'} z${pos.z ?? '?'}</span></div>
+    <div>Inventory: <span class="text-nova-text">${escHtml(inv)}</span></div>
+    <div>Nearby: <span class="text-nova-text">${escHtml((state.nearbyBlocks||[]).slice(0,8).join(', ') || 'none')}</span></div>`;
+};
+
+const GAME_DRIVER_NOTES = {
+  minecraft: 'Needs Node.js + a Minecraft server. Run "npm install" in node/minecraft-bridge first.',
+  universal: 'Captures your screen and presses keys/mouse. Set VISION_MODEL in .env and install pydirectinput, mss, pillow. Best-effort; not for precision games.',
+  vrchat: 'Enable OSC in VRChat’s Action Menu. Install python-osc. Movement/emote only (TOS-friendly).',
+  factorio: 'Start the Factorio server with --rcon-port / --rcon-password and set FACTORIO_RCON_* in .env.',
+  osu: 'OFFLINE/SOLO ONLY — automating osu! on official servers is bannable. Use at your own risk.',
+};
+
+function _updateGameDriverNote() {
+  const sel = $('game-driver-select');
+  const note = $('game-driver-note');
+  if (!sel || !note) return;
+  const txt = GAME_DRIVER_NOTES[sel.value] || '';
+  note.textContent = txt;
+  note.classList.toggle('hidden', !txt);
+}
+
+async function loadGame() {
+  try {
+    const s = await api().get_game_status();
+    $('game-driver').textContent = s.driver || 'minecraft';
+    const sel = $('game-driver-select');
+    if (sel && !s.running) sel.value = s.driver || 'minecraft';
+    sel.onchange = _updateGameDriverNote;
+    _updateGameDriverNote();
+    const badge = $('game-badge');
+    badge.textContent = s.running ? 'Running' : 'Stopped';
+    badge.className = 'text-[11px] font-semibold ' + (s.running ? 'text-emerald-400' : 'text-nova-muted');
+    if (s.goal && !$('game-goal').value) $('game-goal').value = s.goal;
+  } catch(e) { console.error(e); }
+}
+
+async function doStartGame() {
+  const driver = $('game-driver-select') ? $('game-driver-select').value : '';
+  try { const r = await api().start_game($('game-goal').value || '', driver); if (r && !r.ok && r.msg) showNotification(r.msg); loadGame(); } catch(e) { console.error(e); }
+}
+async function doStopGame() { try { await api().stop_game(); loadGame(); } catch(e) { console.error(e); } }
+async function doSetGameGoal() {
+  try { const r = await api().set_game_goal($('game-goal').value || ''); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
+}
 
 // ── Chat ─────────────────────────────────────────────────────────────────
 
@@ -1061,17 +1348,36 @@ function playAlarmTone() {
 
 // ── Init ─────────────────────────────────────────────────────────────────
 
+function _apiReady() {
+  return !!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.initialize === 'function');
+}
+
 async function init() {
-  // Wait for pywebview API bridge
+  // Wait for the pywebview API bridge AND its methods to attach. pywebview sets
+  // window.pywebview first and wires up the js_api methods slightly later (it
+  // also fires a 'pywebviewready' event), so polling only for window.pywebview
+  // races and "initialize is not a function".
+  let readyFired = false;
+  window.addEventListener('pywebviewready', () => { readyFired = true; });
   let tries = 0;
-  while (!window.pywebview && tries < 100) {
+  while (!_apiReady() && tries < 400) {            // up to ~20s
     await new Promise(r => setTimeout(r, 50));
     tries++;
   }
-  if (!api()) { dismissLoader(); document.body.innerHTML = '<div class="p-8 text-red-400">Failed to connect to backend.</div>'; return; }
+  if (!_apiReady()) {
+    dismissLoader();
+    document.body.innerHTML = '<div class="p-8 text-red-400">Failed to connect to backend (API bridge not ready' +
+      (readyFired ? ', methods missing' : '') + '). Please restart NovaAI.</div>';
+    return;
+  }
 
   // Heavy backend init (config, DB, profiles) — runs while the loading screen is shown
-  try { STATE = await api().initialize(); } catch(e) { console.error('Backend init failed:', e); }
+  let initError = null;
+  try { STATE = await api().initialize(); } catch(e) { initError = e; console.error('Backend init failed:', e); }
+  if (!STATE || !STATE.initialized) {
+    initError = initError || 'backend did not finish initializing';
+    appendChat('System', 'Startup error: ' + initError + '. Check the terminal for details, then restart NovaAI.', 'system');
+  }
   syncDashboard();
 
   // Load chat history
