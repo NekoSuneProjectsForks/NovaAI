@@ -39,6 +39,9 @@ const OWNER = String(getArg('owner', 'MC_OWNER_USERNAME', '')).toLowerCase();
 const PROFILES_FOLDER = getArg('profiles-folder', 'MC_PROFILES_FOLDER',
   path.join(__dirname, '.minecraft-auth'));
 const VERSION = getArg('version', 'MC_VERSION', false); // false = auto-detect
+const VIEWER_PORT = parseInt(getArg('viewer-port', 'MC_VIEWER_PORT', '8768'), 10);
+const VIEWER_FIRST_PERSON =
+  String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'true')).toLowerCase() !== 'false';
 
 const HOSTILES = new Set([
   'zombie', 'husk', 'drowned', 'zombie_villager', 'skeleton', 'stray', 'wither_skeleton',
@@ -58,6 +61,29 @@ function log(msg) {
   // Printed to stdout; the Python driver forwards these lines to the UI.
   // eslint-disable-next-line no-console
   console.log('[novaai-bridge] ' + msg);
+}
+
+let viewerStarted = false;
+function startViewer() {
+  // Browser-based 3D view of the bot's surroundings / POV — lets you watch what
+  // it's doing without opening the Minecraft client. Optional dependency.
+  if (!VIEWER_PORT || viewerStarted) return;
+  let mineflayerViewer;
+  try {
+    ({ mineflayer: mineflayerViewer } = require('prismarine-viewer'));
+  } catch (e) {
+    log('Live view unavailable: prismarine-viewer not installed. '
+      + 'Run `npm install` in node/minecraft-bridge to enable it.');
+    return;
+  }
+  try {
+    mineflayerViewer(bot, { port: VIEWER_PORT, firstPerson: VIEWER_FIRST_PERSON });
+    viewerStarted = true;
+    log(`live view ready at http://127.0.0.1:${VIEWER_PORT} `
+      + `(${VIEWER_FIRST_PERSON ? 'first' : 'third'}-person)`);
+  } catch (e) {
+    log('live view failed to start: ' + ((e && e.message) || e));
+  }
 }
 
 function scheduleReconnect(reason) {
@@ -108,6 +134,7 @@ function createBot() {
     try {
       bot.pathfinder.setMovements(new Movements(bot));
     } catch (e) { /* ignore */ }
+    startViewer();
     log(`spawned as ${bot.username}${OWNER ? `, owner = ${OWNER}` : ''}`);
   });
 

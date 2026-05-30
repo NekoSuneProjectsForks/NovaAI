@@ -372,7 +372,9 @@ tailwind.config = {
           <div class="flex gap-2">
             <button id="game-start-btn" onclick="doStartGame()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Start</button>
             <button id="game-stop-btn" onclick="doStopGame()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Stop</button>
+            <button id="game-view-btn" onclick="doOpenGameView()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold" title="Watch the bot's view in your browser (Minecraft)">Live View</button>
           </div>
+          <div class="text-[11px] text-nova-muted mt-2">Live View (Minecraft) opens the bot's first-person view in your browser — no Minecraft client needed.</div>
         </div>
 
         <div class="card p-5">
@@ -1002,6 +1004,7 @@ async function doStartGame() {
   try { const r = await api().start_game($('game-goal').value || '', driver); if (r && !r.ok && r.msg) showNotification(r.msg); loadGame(); } catch(e) { console.error(e); }
 }
 async function doStopGame() { try { await api().stop_game(); loadGame(); } catch(e) { console.error(e); } }
+async function doOpenGameView() { try { const r = await api().open_game_view(); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
 async function doSetGameGoal() {
   try { const r = await api().set_game_goal($('game-goal').value || ''); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
 }

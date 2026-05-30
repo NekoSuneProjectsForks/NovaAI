@@ -846,11 +846,34 @@ class Api:
 
     def get_game_status(self) -> dict[str, Any]:
         running = bool(self.game_agent and self.game_agent.is_running())
+        viewer_url = ""
+        driver = self.config.game_driver if self.config else "minecraft"
+        if running and self.game_agent is not None:
+            drv = getattr(self.game_agent, "driver", None)
+            if drv is not None and hasattr(drv, "viewer_url"):
+                try:
+                    viewer_url = drv.viewer_url()
+                except Exception:
+                    viewer_url = ""
         return {
             "running": running,
-            "driver": self.config.game_driver if self.config else "minecraft",
+            "driver": driver,
             "goal": self.game_agent.goal if self.game_agent else "",
+            "viewer_url": viewer_url,
         }
+
+    def open_game_view(self) -> dict[str, Any]:
+        status = self.get_game_status()
+        url = status.get("viewer_url")
+        if not url:
+            return {"ok": False, "msg": "Live view is only available while a Minecraft game is running."}
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return {"ok": True, "url": url}
 
     def _build_game_driver(self, driver_name: str):
         if driver_name == "minecraft":

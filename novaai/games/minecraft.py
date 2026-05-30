@@ -70,6 +70,10 @@ class MinecraftDriver:
             env_args += ["--profiles-folder", str(self.config.mc_profiles_folder)]
         if self.config.mc_version:
             env_args += ["--version", str(self.config.mc_version)]
+        env_args += [
+            "--viewer-port", str(self.config.mc_viewer_port),
+            "--viewer-first-person", "true" if self.config.mc_viewer_first_person else "false",
+        ]
 
         # Capture stdout so we can surface bridge logs (esp. the Microsoft
         # device-code login prompt) to the UI.
@@ -151,6 +155,9 @@ class MinecraftDriver:
 
     def available_verbs(self) -> list[str]:
         return list(_VERBS)
+
+    def viewer_url(self) -> str:
+        return f"http://127.0.0.1:{self.config.mc_viewer_port}"
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
