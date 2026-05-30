@@ -1327,7 +1327,11 @@ class Api:
     def get_game_status(self) -> dict[str, Any]:
         running = bool(self.game_agent and self.game_agent.is_running())
         viewer_url = ""
-        driver = self.config.game_driver if self.config else "minecraft"
+        # Report the actually-running driver when there is one, else the configured
+        # default — otherwise the panel always snaps back to the .env default.
+        driver = getattr(self, "game_driver_key", None) or (
+            self.config.game_driver if self.config else "minecraft"
+        )
         if running and self.game_agent is not None:
             drv = getattr(self.game_agent, "driver", None)
             if drv is not None and hasattr(drv, "viewer_url"):
@@ -1384,15 +1388,31 @@ class Api:
     def start_game(self, goal: str = "", driver: str = "") -> dict[str, Any]:
         if (err := self._not_ready()):
             return err
+        driver_name = (driver or self.config.game_driver or "minecraft").strip().lower()
+        # If a game is already running, stop it first so switching drivers works
+        # (otherwise the old game just keeps running).
         if self.game_agent and self.game_agent.is_running():
-            return {"ok": False, "msg": "Game agent is already running."}
+            if getattr(self, "game_driver_key", None) == driver_name:
+                return {"ok": False, "msg": f"{driver_name} is already running."}
+            self.stop_game()
+            time.sleep(0.5)
         try:
             from .games.agent import GameAgent
 
-            driver_name = (driver or self.config.game_driver or "minecraft").strip().lower()
             game_driver = self._build_game_driver(driver_name)
             if game_driver is None:
                 return {"ok": False, "msg": f"Unknown game driver: {driver_name}"}
+            # Remember + persist the chosen driver so status/UI reflect reality.
+            self.game_driver_key = driver_name
+            self.config.game_driver = driver_name
+            try:
+                from . import database
+
+                store = json.loads(database.get_state("game_settings", "{}") or "{}")
+                store["game_driver"] = driver_name
+                database.set_state("game_settings", json.dumps(store))
+            except Exception:
+                pass
             if driver_name == "osu" and not self.config.osu_allow_online:
                 self._push_chat(
                     "System",
