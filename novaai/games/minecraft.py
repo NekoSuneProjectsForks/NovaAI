@@ -272,9 +272,9 @@ class MinecraftDriver:
             pass
 
     def viewer_url(self) -> str:
-        # Combined dashboard (3D world + live inventory/crafting/furnace) served
-        # by the bridge.
-        return f"http://127.0.0.1:{self.config.mc_bridge_port}/view"
+        # Single-port dashboard: 3D world + inventory/crafting/furnace + thoughts
+        # + server chat, all served on the viewer port.
+        return f"http://127.0.0.1:{self.config.mc_viewer_port}/"
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

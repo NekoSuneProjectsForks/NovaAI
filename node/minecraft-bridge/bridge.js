@@ -97,72 +97,107 @@ function log(msg) {
   console.log('[novaai-bridge] ' + msg);
 }
 
-let inventoryStarted = false;
-function startWebInventory() {
-  // Live inventory viewer — also shows chest/crafting/furnace windows when the
-  // bot opens them, so you can watch it craft and smelt.
-  if (!INVENTORY_PORT || inventoryStarted) return;
-  let inventoryViewer;
-  try {
-    inventoryViewer = require('mineflayer-web-inventory');
-  } catch (e) {
-    log('Inventory view unavailable (npm install mineflayer-web-inventory).');
-    return;
-  }
-  try {
-    inventoryViewer(bot, { port: INVENTORY_PORT });
-    inventoryStarted = true;
-    log(`inventory view at http://127.0.0.1:${INVENTORY_PORT}`);
-  } catch (e) {
-    log('inventory view failed: ' + ((e && e.message) || e));
-  }
+function feedData() {
+  const o = observe();
+  return {
+    connected,
+    username: USERNAME,
+    health: o.health, food: o.food, position: o.position,
+    chat: chatLog.slice(-40),
+    thoughts: thoughts.slice(-40),
+  };
 }
 
-let viewerStarted = false;
-function startViewer() {
-  // Browser-based 3D view of the bot's surroundings / POV — lets you watch what
-  // it's doing without opening the Minecraft client. Optional dependency.
-  if (!VIEWER_PORT || viewerStarted) return;
-  let mineflayerViewer;
-  try {
-    ({ mineflayer: mineflayerViewer } = require('prismarine-viewer'));
-  } catch (e) {
-    log('Live view unavailable (' + ((e && e.message) || e) + '). '
-      + 'Run `npm install` in node/minecraft-bridge (it needs prismarine-viewer + canvas).');
-    return;
-  }
-  // The viewer's textures lag the newest MC. If the server version isn't in the
-  // viewer's supported list, render with the highest supported one (e.g. 1.21.4
-  // for a 1.21.11 server) so textures load instead of showing broken blocks.
-  let assetVersion = bot.version;
-  try {
-    const supported = require('prismarine-viewer').supportedVersions || [];
-    if (VIEWER_VERSION) {
-      assetVersion = VIEWER_VERSION;
-    } else if (supported.length && !supported.includes(bot.version)) {
-      assetVersion = supported[supported.length - 1];
-    }
-  } catch (e) { /* keep bot.version */ }
+// Everything (dashboard + 3D world + inventory) is served on ONE port:
+// VIEWER_PORT. The 3D viewer runs internally under the /world prefix and the
+// inventory runs internally at root; a small reverse proxy on VIEWER_PORT routes
+// /world/* to the viewer and the inventory's root paths (/static, /socket.io,
+// /inv) to the inventory, while serving the dashboard at / and /feed itself.
+let publicStarted = false;
+function startPublicSite() {
+  if (!VIEWER_PORT || publicStarted) return;
+  const viewerInternal = VIEWER_PORT + 1;
+  const invInternal = VIEWER_PORT + 2;
 
-  const viewerBot = assetVersion === bot.version
-    ? bot
-    : new Proxy(bot, { get(t, p) { return p === 'version' ? assetVersion : t[p]; } });
-  const opts = { port: VIEWER_PORT, firstPerson: VIEWER_FIRST_PERSON, viewDistance: 6 };
+  // --- start the 3D viewer internally under the /world prefix ---
+  let viewerOk = false;
   try {
-    mineflayerViewer(viewerBot, opts);
-    viewerStarted = true;
-    log(`live view ready at http://127.0.0.1:${VIEWER_PORT} `
-      + `(${VIEWER_FIRST_PERSON ? 'first' : 'third'}-person, assets ${assetVersion}`
-      + `${assetVersion !== bot.version ? ` for server ${bot.version}` : ''})`);
-  } catch (e) {
-    try {
-      mineflayerViewer(bot, opts);   // fall back to the real version
-      viewerStarted = true;
-      log(`live view ready at http://127.0.0.1:${VIEWER_PORT} (native ${bot.version})`);
-    } catch (e2) {
-      log('live view failed to start: ' + ((e2 && e2.message) || e2));
+    const { mineflayer: mineflayerViewer, supportedVersions } = require('prismarine-viewer');
+    let assetVersion = bot.version;
+    if (VIEWER_VERSION) assetVersion = VIEWER_VERSION;
+    else if ((supportedVersions || []).length && !supportedVersions.includes(bot.version)) {
+      assetVersion = supportedVersions[supportedVersions.length - 1];
     }
+    const viewerBot = assetVersion === bot.version
+      ? bot
+      : new Proxy(bot, { get(t, p) { return p === 'version' ? assetVersion : t[p]; } });
+    mineflayerViewer(viewerBot, {
+      port: viewerInternal, firstPerson: VIEWER_FIRST_PERSON, viewDistance: 6, prefix: '/world',
+    });
+    viewerOk = true;
+    log(`3D view assets ${assetVersion}${assetVersion !== bot.version ? ` (server ${bot.version})` : ''}`);
+  } catch (e) {
+    log('3D view unavailable (' + ((e && e.message) || e) + ') — run npm install.');
   }
+
+  // --- start the inventory viewer internally at root ---
+  let invOk = false;
+  try {
+    require('mineflayer-web-inventory')(bot, { port: invInternal });
+    invOk = true;
+  } catch (e) {
+    log('Inventory view unavailable (' + ((e && e.message) || e) + ').');
+  }
+
+  // --- single public server with a reverse proxy ---
+  let proxy = null;
+  try {
+    proxy = require('http-proxy').createProxyServer({ ws: true });
+    proxy.on('error', () => { /* ignore transient proxy errors */ });
+  } catch (e) {
+    log('http-proxy missing — run npm install in node/minecraft-bridge.');
+  }
+  const viewerTarget = `http://127.0.0.1:${viewerInternal}`;
+  const invTarget = `http://127.0.0.1:${invInternal}`;
+  // The viewer client reads window.prefix; inject it so its socket/textures use
+  // /world instead of root (avoids clashing with the inventory's /socket.io).
+  const worldHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>world</title>'
+    + '<style>*{margin:0;padding:0}</style></head><body>'
+    + "<script>window.prefix='/world'</script>"
+    + '<script type="text/javascript" src="/world/index.js"></script></body></html>';
+
+  const site = http.createServer((req, res) => {
+    const p = (req.url || '').split('?')[0];
+    if (p === '/' || p === '/index.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(viewDashboardHtml());
+    }
+    if (p === '/feed') return sendJson(res, 200, feedData());
+    if (p === '/world' || p === '/world/' || p === '/world/index.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(worldHtml);
+    }
+    if (proxy && p.startsWith('/world')) return proxy.web(req, res, { target: viewerTarget });
+    if (proxy && p.startsWith('/inv')) {
+      req.url = req.url.replace(/^\/inv/, '') || '/';
+      return proxy.web(req, res, { target: invTarget });
+    }
+    // Inventory's absolute roots (/static, /socket.io, /favicon, /manifest...).
+    if (proxy) return proxy.web(req, res, { target: invTarget });
+    sendJson(res, 503, { ok: false, message: 'viewer proxy unavailable' });
+  });
+  site.on('upgrade', (req, socket, head) => {
+    if (!proxy) return socket.destroy();
+    const p = (req.url || '').split('?')[0];
+    if (p.startsWith('/world')) proxy.ws(req, socket, head, { target: viewerTarget });
+    else proxy.ws(req, socket, head, { target: invTarget });   // inventory /socket.io
+  });
+  site.on('error', (e) => log('live site error: ' + ((e && e.message) || e)));
+  site.listen(VIEWER_PORT, '127.0.0.1', () => {
+    publicStarted = true;
+    log(`live view (one port): http://127.0.0.1:${VIEWER_PORT}  `
+      + `[3D ${viewerOk ? 'on' : 'off'}, inventory ${invOk ? 'on' : 'off'}]`);
+  });
 }
 
 function scheduleReconnect(reason) {
@@ -216,8 +251,7 @@ function createBot() {
     try {
       bot.pathfinder.setMovements(new Movements(bot));
     } catch (e) { /* ignore */ }
-    startViewer();
-    startWebInventory();
+    startPublicSite();
     startAutoEat();
     log(`spawned as ${bot.username}${OWNER ? `, owner = ${OWNER}` : ''}`);
   });
@@ -1651,14 +1685,14 @@ function viewDashboardHtml() {
     <!-- 3D world -->
     <div class="flex-1 min-w-0 p-3">
       <div class="h-full rounded-xl overflow-hidden glow bg-panel">
-        <iframe src="http://127.0.0.1:${VIEWER_PORT}/" title="3D world"></iframe>
+        <iframe src="/world/" title="3D world"></iframe>
       </div>
     </div>
     <!-- right rail -->
     <div class="w-[380px] shrink-0 p-3 pl-0 flex flex-col gap-3">
       <div class="rounded-xl glow bg-panel overflow-hidden h-[44%] flex flex-col">
         <div class="px-3 py-2 text-[12px] font-bold text-nova border-b border-edge">Inventory · Crafting · Furnace</div>
-        <div class="flex-1"><iframe src="http://127.0.0.1:${INVENTORY_PORT}/" title="Inventory"></iframe></div>
+        <div class="flex-1"><iframe src="/inv/" title="Inventory"></iframe></div>
       </div>
       <div class="rounded-xl glow bg-panel overflow-hidden flex-1 flex flex-col">
         <div class="px-3 py-2 text-[12px] font-bold text-nova border-b border-edge flex items-center justify-between">
