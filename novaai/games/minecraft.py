@@ -264,6 +264,13 @@ class MinecraftDriver:
             "first if needed). Keep a farm watered — crops need water within 4 blocks."
         )
 
+    def push_thought(self, text: str) -> None:
+        """Send a narrated thought to the bridge for the Live View dashboard."""
+        try:
+            requests.post(self.base_url + "/thought", json={"text": text}, timeout=2)
+        except Exception:
+            pass
+
     def viewer_url(self) -> str:
         # Combined dashboard (3D world + live inventory/crafting/furnace) served
         # by the bridge.

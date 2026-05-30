@@ -990,6 +990,13 @@ class Api:
     def _game_narrate(self, text: str, emotion: str = "neutral") -> None:
         companion = self.profile.get("companion_name", "NovaAI")
         self._push_chat(companion, text, "assistant")
+        # Mirror the thought to the game bridge's Live View dashboard.
+        drv = getattr(self.game_agent, "driver", None) if self.game_agent else None
+        if drv is not None and hasattr(drv, "push_thought"):
+            try:
+                drv.push_thought(text)
+            except Exception:
+                pass
         # Echo to Twitch chat if connected + authenticated.
         if self.twitch and self.twitch.authenticated:
             try:
