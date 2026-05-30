@@ -365,6 +365,11 @@ tailwind.config = {
             </select>
           </div>
           <div id="game-driver-note" class="text-[11px] text-amber-400 mb-2 hidden"></div>
+          <div id="game-settings" class="grid grid-cols-2 gap-x-3 gap-y-2 mb-3"></div>
+          <div class="flex gap-2 mb-3">
+            <button onclick="doSaveGameSettings()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Save Settings</button>
+            <span id="game-settings-saved" class="text-[11px] text-emerald-400 self-center"></span>
+          </div>
           <div class="flex gap-2 mb-2">
             <input id="game-goal" type="text" placeholder="Goal (e.g. collect wood, build a shelter)..." class="flex-1" />
             <button onclick="doSetGameGoal()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Set Goal</button>
@@ -975,6 +980,8 @@ const GAME_DRIVER_NOTES = {
   osu: 'OFFLINE/SOLO ONLY — automating osu! on official servers is bannable. Use at your own risk.',
 };
 
+let _gameSchema = null;
+
 function _updateGameDriverNote() {
   const sel = $('game-driver-select');
   const note = $('game-driver-note');
@@ -984,14 +991,73 @@ function _updateGameDriverNote() {
   note.classList.toggle('hidden', !txt);
 }
 
+function _onGameDriverChange() {
+  const sel = $('game-driver-select');
+  if (!sel) return;
+  _updateGameDriverNote();
+  renderGameSettings(sel.value);
+  const meta = _gameSchema && _gameSchema[sel.value];
+  const vb = $('game-view-btn');
+  if (vb) vb.classList.toggle('hidden', !(meta && meta.preview));
+}
+
+function renderGameSettings(driver) {
+  const wrap = $('game-settings');
+  if (!wrap) return;
+  if (!_gameSchema || !_gameSchema[driver]) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '';
+  (_gameSchema[driver].fields || []).forEach(f => {
+    const id = 'gset__' + f.key;
+    const cell = document.createElement('label');
+    if (f.type === 'bool') {
+      cell.className = 'flex items-center gap-2 text-[12px] text-nova-text col-span-2';
+      cell.innerHTML = `<input id="${id}" type="checkbox" class="w-4 h-4 rounded accent-violet-500" ${f.value ? 'checked' : ''} /> <span>${escHtml(f.label)}</span>`;
+    } else if (f.type === 'select') {
+      const opts = (f.options || []).map(o => `<option value="${escHtml(o)}" ${String(f.value) === String(o) ? 'selected' : ''}>${escHtml(o)}</option>`).join('');
+      cell.className = 'flex flex-col gap-1 text-[11px] text-nova-muted';
+      cell.innerHTML = `<span>${escHtml(f.label)}</span><select id="${id}" class="w-full">${opts}</select>`;
+    } else {
+      const itype = f.type === 'password' ? 'password' : ((f.type === 'int' || f.type === 'float') ? 'number' : 'text');
+      const step = f.type === 'float' ? ' step="0.5"' : '';
+      cell.className = 'flex flex-col gap-1 text-[11px] text-nova-muted';
+      cell.innerHTML = `<span>${escHtml(f.label)}</span><input id="${id}" type="${itype}"${step} class="w-full" value="${escHtml(f.value != null ? String(f.value) : '')}" />`;
+    }
+    wrap.appendChild(cell);
+  });
+}
+
+function collectGameSettings(driver) {
+  const out = {};
+  if (!_gameSchema || !_gameSchema[driver]) return out;
+  (_gameSchema[driver].fields || []).forEach(f => {
+    const el = $('gset__' + f.key);
+    if (!el) return;
+    out[f.key] = f.type === 'bool' ? el.checked : el.value;
+  });
+  return out;
+}
+
+async function doSaveGameSettings() {
+  const driver = $('game-driver-select') ? $('game-driver-select').value : 'minecraft';
+  try {
+    const r = await api().save_game_settings(driver, collectGameSettings(driver));
+    const note = $('game-settings-saved');
+    if (r && r.ok) { if (note) { note.textContent = 'Saved'; setTimeout(() => note.textContent = '', 2000); } }
+    else if (r && r.msg) showNotification(r.msg);
+  } catch(e) { console.error(e); }
+}
+
 async function loadGame() {
   try {
     const s = await api().get_game_status();
     $('game-driver').textContent = s.driver || 'minecraft';
+    try { const gs = await api().get_game_settings(); _gameSchema = gs.drivers; } catch(e) { console.error(e); }
     const sel = $('game-driver-select');
-    if (sel && !s.running) sel.value = s.driver || 'minecraft';
-    sel.onchange = _updateGameDriverNote;
-    _updateGameDriverNote();
+    if (sel) {
+      if (!s.running) sel.value = s.driver || 'minecraft';
+      sel.onchange = _onGameDriverChange;
+      _onGameDriverChange();
+    }
     const badge = $('game-badge');
     badge.textContent = s.running ? 'Running' : 'Stopped';
     badge.className = 'text-[11px] font-semibold ' + (s.running ? 'text-emerald-400' : 'text-nova-muted');

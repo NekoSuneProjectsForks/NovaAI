@@ -88,6 +88,91 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "logo.ico"
 _window: webview.Window | None = None
 
+# Per-driver game settings shown in the Game panel (instead of editing .env).
+# Each field maps to a Config attribute; values are persisted to app_state.
+GAME_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
+    "minecraft": {
+        "label": "Minecraft (Mineflayer + Node)",
+        "preview": True,
+        "fields": [
+            {"key": "mc_host", "label": "Server host", "type": "text"},
+            {"key": "mc_port", "label": "Server port", "type": "int"},
+            {"key": "mc_username", "label": "Bot username / MS email", "type": "text"},
+            {"key": "mc_auth", "label": "Auth mode", "type": "select", "options": ["offline", "microsoft"]},
+            {"key": "mc_owner_username", "label": "Owner username", "type": "text"},
+            {"key": "mc_help_whitelist", "label": "Help whitelist (comma-separated)", "type": "list"},
+            {"key": "mc_version", "label": "MC version (blank = auto)", "type": "text"},
+            {"key": "mc_home", "label": "Home x,y,z (optional)", "type": "text"},
+            {"key": "mc_bridge_port", "label": "Bridge port", "type": "int"},
+            {"key": "mc_viewer_port", "label": "Live-view port", "type": "int"},
+            {"key": "mc_viewer_first_person", "label": "First-person view", "type": "bool"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "universal": {
+        "label": "Universal (vision + keyboard)",
+        "preview": False,
+        "fields": [
+            {"key": "game_universal_name", "label": "Game name (e.g. Unturned, Terraria)", "type": "text"},
+            {"key": "vision_model", "label": "Vision model (Ollama, e.g. moondream)", "type": "text"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "vrchat": {
+        "label": "VRChat (OSC)",
+        "preview": False,
+        "fields": [
+            {"key": "vrchat_osc_host", "label": "OSC host", "type": "text"},
+            {"key": "vrchat_osc_port", "label": "OSC port", "type": "int"},
+            {"key": "vision_model", "label": "Vision model (optional)", "type": "text"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "factorio": {
+        "label": "Factorio (RCON)",
+        "preview": False,
+        "fields": [
+            {"key": "factorio_rcon_host", "label": "RCON host", "type": "text"},
+            {"key": "factorio_rcon_port", "label": "RCON port", "type": "int"},
+            {"key": "factorio_rcon_password", "label": "RCON password", "type": "password"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "osu": {
+        "label": "osu! (offline / solo only)",
+        "preview": False,
+        "fields": [
+            {"key": "osu_allow_online", "label": "Allow online (BANNABLE — at your own risk)", "type": "bool"},
+            {"key": "vision_model", "label": "Vision model (Ollama)", "type": "text"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+}
+_GAME_FIELD_TYPES: dict[str, str] = {
+    f["key"]: f["type"] for meta in GAME_SETTINGS_SCHEMA.values() for f in meta["fields"]
+}
+
+
+def _coerce_game_setting(value: Any, ftype: str) -> Any:
+    if ftype == "int":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    if ftype == "float":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 1.0
+    if ftype == "bool":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    if ftype == "list":
+        items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+        return tuple(str(s).strip() for s in items if str(s).strip())
+    return str(value).strip()
+
 
 class Api:
     """Python backend exposed to JavaScript via pywebview.api."""
@@ -123,6 +208,7 @@ class Api:
         """Heavy init — called from JS once the loading screen is visible."""
         ensure_runtime_dirs()
         self.config = Config.from_env()
+        self._apply_saved_game_settings()
         self.memory = MemoryStore(self.config)
         self.active_profile_id = get_active_profile_id()
         self.profile = load_profile() or {}
@@ -910,6 +996,68 @@ class Api:
             return f"Got it — doing that in-game now: {user_text.strip()}"
         return None
 
+    def _apply_saved_game_settings(self) -> None:
+        """Apply game settings saved from the panel (override .env)."""
+        if not self.config:
+            return
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("game_settings", "{}") or "{}")
+        except Exception:
+            return
+        for key, val in store.items():
+            if key == "game_driver":
+                self.config.game_driver = str(val)
+                continue
+            ftype = _GAME_FIELD_TYPES.get(key)
+            if ftype is not None:
+                try:
+                    setattr(self.config, key, _coerce_game_setting(val, ftype))
+                except Exception:
+                    pass
+
+    def get_game_settings(self) -> dict[str, Any]:
+        drivers: dict[str, Any] = {}
+        for drv, meta in GAME_SETTINGS_SCHEMA.items():
+            fields = []
+            for f in meta["fields"]:
+                val = getattr(self.config, f["key"], "") if self.config else ""
+                if f["type"] == "list":
+                    val = ", ".join(val) if isinstance(val, (list, tuple)) else (val or "")
+                if val is None:
+                    val = ""
+                fields.append({**f, "value": val})
+            drivers[drv] = {"label": meta["label"], "preview": meta["preview"], "fields": fields}
+        return {
+            "drivers": drivers,
+            "current": self.config.game_driver if self.config else "minecraft",
+        }
+
+    def save_game_settings(self, driver: str, values: dict[str, Any]) -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        meta = GAME_SETTINGS_SCHEMA.get(driver)
+        if not meta:
+            return {"ok": False, "msg": f"Unknown driver: {driver}"}
+        applied: dict[str, Any] = {}
+        for f in meta["fields"]:
+            if f["key"] in (values or {}):
+                coerced = _coerce_game_setting(values[f["key"]], f["type"])
+                setattr(self.config, f["key"], coerced)
+                applied[f["key"]] = list(coerced) if isinstance(coerced, tuple) else coerced
+        self.config.game_driver = driver
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("game_settings", "{}") or "{}")
+            store.update(applied)
+            store["game_driver"] = driver
+            database.set_state("game_settings", json.dumps(store))
+        except Exception:
+            pass
+        return {"ok": True, "msg": "Game settings saved."}
+
     def get_game_status(self) -> dict[str, Any]:
         running = bool(self.game_agent and self.game_agent.is_running())
         viewer_url = ""
@@ -952,7 +1100,7 @@ class Api:
         if driver_name == "universal":
             from .games.universal import UniversalGameDriver
 
-            return UniversalGameDriver(self.config)
+            return UniversalGameDriver(self.config, game_name=self.config.game_universal_name)
         if driver_name == "osu":
             from .games.osu import OsuDriver
 

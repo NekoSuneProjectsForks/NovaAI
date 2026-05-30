@@ -343,6 +343,7 @@ class Config:
     factorio_rcon_password: str | None
     vrchat_osc_host: str
     vrchat_osc_port: int
+    game_universal_name: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -661,4 +662,5 @@ class Config:
             factorio_rcon_password=parse_optional_str_env("FACTORIO_RCON_PASSWORD"),
             vrchat_osc_host=os.getenv("VRCHAT_OSC_HOST", "127.0.0.1").strip() or "127.0.0.1",
             vrchat_osc_port=int(os.getenv("VRCHAT_OSC_PORT", "9000")),
+            game_universal_name=os.getenv("GAME_UNIVERSAL_NAME", "a PC game").strip() or "a PC game",
         )
