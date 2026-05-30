@@ -17,19 +17,33 @@ from ..config import Config
 from ..engine import GenerationRequest, detect_emotion, generate_reply
 from .base import GameCommand, GameDriver
 
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
 def _extract_command(reply: str) -> dict[str, Any] | None:
-    """Best-effort parse of the model's JSON action."""
-    match = _JSON_RE.search(reply or "")
-    if not match:
+    """Best-effort parse of the model's JSON action (tolerant of fences/prose)."""
+    if not reply:
         return None
-    try:
-        data = json.loads(match.group(0))
-        return data if isinstance(data, dict) else None
-    except (json.JSONDecodeError, TypeError):
+    text = reply.strip()
+    text = re.sub(r"^```(?:json)?", "", text).strip().strip("`").strip()
+    start = text.find("{")
+    if start == -1:
         return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                blob = text[start:i + 1]
+                for attempt in (blob, blob.replace("'", '"')):
+                    try:
+                        data = json.loads(attempt)
+                        if isinstance(data, dict):
+                            return data
+                    except Exception:
+                        pass
+                break
+    return None
 
 
 class GameAgent:
@@ -166,26 +180,30 @@ class GameAgent:
             return
 
         command = _extract_command(result.reply)
-        if not command:
-            # No parseable action; narrate the raw thought and wait.
-            self.narrate(result.reply.strip()[:200] or "Hmm, let me think...", result.emotion)
-            return
-
-        thought = str(command.get("thought", "")).strip()
-        verb = str(command.get("verb", "")).strip().lower()
-        args = command.get("args") if isinstance(command.get("args"), dict) else {}
+        thought = str(command.get("thought", "")).strip() if command else ""
+        verb = str(command.get("verb", "")).strip().lower() if command else ""
+        args = (command.get("args") if command and isinstance(command.get("args"), dict) else {})
 
         if thought:
             self.narrate(thought, detect_emotion(thought))
             self.remember(f"While playing {self.driver.name}: {thought}")
+        elif command is None:
+            # Model didn't give a usable action — show a snippet so it's visible.
+            snippet = result.reply.strip().replace("\n", " ")[:160]
+            if snippet:
+                self.narrate(snippet, result.emotion)
 
+        # Fall back to wandering so the bot always does *something* (and so a
+        # broken pathfinder/version doesn't leave it frozen).
         if not verb or verb not in verbs:
-            return
+            verb, args = ("wander", {"seconds": 2}) if "wander" in verbs else ("look", {})
 
         outcome = self.driver.act(GameCommand(verb=verb, args=args))
         outcome_text = str(outcome.get("message", outcome))
+        # Surface failures so the user can see why nothing's happening.
+        if isinstance(outcome, dict) and outcome.get("ok") is False:
+            self.narrate(f"({verb}: {outcome_text})", "anxious")
 
-        # Keep a short rolling history so the model has continuity (cap length).
         self._log.append({"role": "assistant", "content": thought or f"{verb} {args}"})
         self._log.append({"role": "user", "content": f"Result: {outcome_text}"})
         if len(self._log) > 12:

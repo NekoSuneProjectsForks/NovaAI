@@ -1158,7 +1158,16 @@ async function act(verb, args) {
           await bot.pathfinder.goto(new goals.GoalNear(tx, Math.floor(pos.y), tz, 3));
           return { ok: true, message: `explored toward ${tx}, ${tz}` };
         } catch (e) {
-          return { ok: false, message: `couldn't path there: ${(e && e.message) || e}` };
+          // Pathfinder couldn't make it (terrain/version) — just walk a bit.
+          try {
+            bot.setControlState('forward', true);
+            await sleep(2500);
+            bot.clearControlStates();
+            return { ok: true, message: 'explored on foot a bit' };
+          } catch (_) {
+            try { bot.clearControlStates(); } catch (__) { /* ignore */ }
+            return { ok: false, message: `couldn't move: ${(e && e.message) || e}` };
+          }
         }
       }
 
@@ -1504,6 +1513,23 @@ async function act(verb, args) {
         if (!item) return { ok: false, message: `unknown item ${name}` };
         await bot.toss(item.id, null, args.count !== undefined ? Number(args.count) : undefined);
         return { ok: true, message: `dropped ${name}` };
+      }
+
+      case 'wander': {
+        // Low-level movement that doesn't depend on pathfinder/world data —
+        // walks forward, occasionally jumps, with a small random turn.
+        const seconds = Math.max(1, Math.min(6, Number(args.seconds) || 3));
+        try {
+          await bot.look(bot.entity.yaw + (Math.random() - 0.5) * 1.6, 0, false);
+          bot.setControlState('forward', true);
+          if (Math.random() < 0.4) bot.setControlState('jump', true);
+          await sleep(seconds * 1000);
+          bot.clearControlStates();
+          return { ok: true, message: 'wandered around' };
+        } catch (e) {
+          try { bot.clearControlStates(); } catch (_) { /* ignore */ }
+          return { ok: false, message: 'wander failed: ' + ((e && e.message) || e) };
+        }
       }
 
       case 'look': {

@@ -30,7 +30,7 @@ _VERBS = [
     "smelt", "cook", "take_smelted", "explore", "find_village", "list_trades", "trade",
     "fish", "hunt", "breed", "upgrade_tools", "build_house",
     "attack", "punch", "defend", "retaliate", "equip", "equip_armor", "eat",
-    "goto", "look", "sleep", "wake", "say", "wait", "stop",
+    "goto", "wander", "look", "sleep", "wake", "say", "wait", "stop",
 ]
 
 
@@ -210,7 +210,9 @@ class MinecraftDriver:
             "eat {} on demand; equip {name,where?}; equip_armor {}.\n"
             "- follow/come {player?} (defaults to owner); bring {name,count?}; "
             "find_in_chests {name}; withdraw {name,count?}; store {name,count?}; drop {name,count?}.\n"
-            "- goto {x,z,y?}; sleep {}; wake {}; say {text}; wait {}; stop {}."
+            "- goto {x,z,y?}; explore {distance?,direction?}; wander {seconds?} "
+            "(simple walk if pathfinding is stuck); sleep {}; wake {}; say {text}; "
+            "wait {}; stop {}."
         )
 
     def default_goal(self) -> str:
