@@ -276,10 +276,10 @@ tailwind.config = {
           <div class="text-[13px] font-bold mb-3">Sing a Song</div>
           <div class="text-[11px] text-nova-muted mb-2">Set SINGING_ENABLED in .env. Cloud backend needs SINGING_API_URL; RVC needs a model + a vocal reference path.</div>
           <div class="flex gap-2 mb-2">
-            <input id="sing-lyrics" type="text" placeholder="Lyrics to sing..." class="flex-1" />
+            <input id="sing-lyrics" type="text" placeholder="&quot;Artist - Title&quot; (fetches timed lyrics) or paste lyrics..." class="flex-1" />
             <button onclick="doSing()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Sing</button>
           </div>
-          <input id="sing-ref" type="text" placeholder="Optional melody/vocal .wav path (RVC)..." class="w-full" />
+          <input id="sing-ref" type="text" placeholder="Optional backing track path (.wav/.mp3) to sing over..." class="w-full" />
         </div>
 
         <div class="card p-5 flex-1 min-h-[180px]">
