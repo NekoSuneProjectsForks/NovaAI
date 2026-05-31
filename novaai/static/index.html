@@ -274,12 +274,12 @@ tailwind.config = {
 
         <div class="card p-5">
           <div class="text-[13px] font-bold mb-3">Sing a Song</div>
-          <div class="text-[11px] text-nova-muted mb-2">Type "Artist - Title" — NovaAI fetches the lyrics, sings them in her voice, and (XTTS) auto-finds a YouTube instrumental to sing over. Songs are saved in audio/songs/ and replay instantly. Works with XTTS or gTTS.</div>
+          <div class="text-[11px] text-nova-muted mb-2">Type "Artist - Title" — NovaAI fetches the lyrics, sings them in her voice, and auto-finds a YouTube instrumental to sing over (or give your own file/YouTube URL below). Vocals + backing are merged into one file, saved in audio/songs/ for instant replay. Works with XTTS or gTTS.</div>
           <div class="flex gap-2 mb-2">
             <input id="sing-lyrics" type="text" placeholder="&quot;Artist - Title&quot; (fetches timed lyrics) or paste lyrics..." class="flex-1" />
             <button onclick="doSing()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Sing</button>
           </div>
-          <input id="sing-ref" type="text" placeholder="Optional: your own backing track (.wav/.mp3) — leave blank to auto-find a YouTube instrumental" class="w-full" />
+          <input id="sing-ref" type="text" placeholder="Optional: your own backing track — file path (.wav/.mp3) or a YouTube URL — leave blank to auto-find an instrumental" class="w-full" />
         </div>
 
         <div class="card p-5 flex-1 min-h-[180px]">

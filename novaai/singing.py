@@ -34,6 +34,45 @@ def _slugify(text: str) -> str:
     return (s or "song")[:80]
 
 
+def _is_url(ref: str) -> bool:
+    return bool(re.match(r"https?://", (ref or "").strip(), re.I))
+
+
+def download_audio_url(url: str, timeout: int = 120) -> Path | None:
+    """Download the audio of a specific URL (e.g. a YouTube link the user pasted
+    as their own backing track). Cached in audio/songs/backing/, returns the path
+    or None if yt-dlp isn't installed / the download failed.
+    """
+    try:
+        import yt_dlp  # type: ignore
+    except Exception:
+        return None
+
+    cache = SONGS_DIR / "backing"
+    cache.mkdir(parents=True, exist_ok=True)
+    base = cache / (_slugify(url) + "_url")
+    for ext in (".m4a", ".webm", ".mp3", ".opus", ".wav"):
+        if base.with_suffix(ext).exists():
+            return base.with_suffix(ext)
+
+    opts = {
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "outtmpl": str(base) + ".%(ext)s",
+        "socket_timeout": timeout,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception:
+        return None
+    for f in cache.glob(_slugify(url) + "_url.*"):
+        return f
+    return None
+
+
 def fetch_instrumental(query: str, timeout: int = 90) -> Path | None:
     """Find and download an instrumental/karaoke track for *query* from YouTube.
 
@@ -225,15 +264,54 @@ class LocalSingingEngine:
             data = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
         return data.astype(np.float32) / 32768.0
 
-    def _sing_gtts(self, lyrics: str, out_base: Path) -> Path:
-        """gTTS path: render the lyrics straight through to an mp3 (no timing/mix)."""
+    def _resolve_backing(self, melody_ref: str | None, query: str) -> str | None:
+        """Pick the backing track: an explicit file/YouTube URL the user gave,
+        else (optionally) auto-find an instrumental on YouTube. Returns a local
+        path (downloading the URL if needed), or None for an a cappella render.
+        """
+        if melody_ref:
+            ref = melody_ref.strip()
+            if _is_url(ref):
+                got = download_audio_url(ref)
+                return str(got) if got else None
+            return ref  # local file path; _mix_backing validates existence
+        if self.config.singing_fetch_instrumental:
+            found = fetch_instrumental(query)
+            if found:
+                return str(found)
+        return None
+
+    def _sing_gtts(self, lyrics: str, out_base: Path, melody_ref: str | None = None) -> Path:
+        """gTTS path: render the lyrics to mp3, then (if there's a backing track)
+        merge vocals + backing into a single mixed wav."""
         from .tts import synthesize_gtts_to_file
 
         timed = self._fetch_synced_lyrics(lyrics)
         text = " \n".join(t for _ts, t in timed) if timed else lyrics
-        output = out_base.with_suffix(".mp3")
-        synthesize_gtts_to_file(text, self.config, output)
-        return output
+        tts_mp3 = out_base.with_suffix(".mp3")
+        synthesize_gtts_to_file(text, self.config, tts_mp3)
+
+        backing = self._resolve_backing(melody_ref, lyrics)
+        if not backing:
+            return tts_mp3
+        mixed = self._mix_files(tts_mp3, backing, out_base)
+        return mixed or tts_mp3
+
+    def _mix_files(self, vocal_path: Path, backing_path: str, out_base: Path) -> Path | None:
+        """Decode a rendered vocal file + backing track and write one mixed wav."""
+        try:
+            import numpy as np
+            import torchaudio
+
+            from .tts import write_wav_audio
+
+            wav, sr = torchaudio.load(str(vocal_path))
+            vocal = wav.mean(dim=0).numpy().astype(np.float32)
+            track = self._mix_backing(vocal, sr, backing_path)
+            np.clip(track, -1.0, 1.0, out=track)
+            return write_wav_audio(out_base.with_suffix(".wav"), [track], sr)
+        except Exception:
+            return None
 
     def sing(self, lyrics: str, melody_ref: str | None = None) -> Path:
         import numpy as np
@@ -244,10 +322,16 @@ class LocalSingingEngine:
         # Songs are cached so the same request replays instantly next time.
         out_base = SONGS_DIR / _slugify(lyrics)
 
-        # gTTS backend — full-lyrics mp3, cached.
+        # gTTS backend — cached. A backing track yields a mixed wav; without one
+        # it's a plain mp3. Check both so replays are instant either way.
         if self.config.tts_provider == "gtts":
-            cached = out_base.with_suffix(".mp3")
-            return cached if cached.exists() else self._sing_gtts(lyrics, out_base)
+            mixed = out_base.with_suffix(".wav")
+            if mixed.exists():
+                return mixed
+            plain = out_base.with_suffix(".mp3")
+            if plain.exists():
+                return plain
+            return self._sing_gtts(lyrics, out_base, melody_ref)
 
         # XTTS backend — timed, on-beat, with an optional backing track.
         cached = out_base.with_suffix(".wav")
@@ -275,13 +359,9 @@ class LocalSingingEngine:
             # No synced lyrics found — sing the given text straight through.
             track = self._render_line(lyrics, model, state, sr)
 
-        # Backing track: an explicit path if given, else auto-find an instrumental
-        # on YouTube (optional). Attaching audio is never required.
-        backing = melody_ref
-        if not backing and self.config.singing_fetch_instrumental:
-            found = fetch_instrumental(lyrics)
-            if found:
-                backing = str(found)
+        # Backing: an explicit file path, a YouTube URL the user pasted, or an
+        # auto-found instrumental — merged with the vocals into this one file.
+        backing = self._resolve_backing(melody_ref, lyrics)
         track = self._mix_backing(track, sr, backing)
         np.clip(track, -1.0, 1.0, out=track)
         return write_wav_audio(cached, [track], sr)
