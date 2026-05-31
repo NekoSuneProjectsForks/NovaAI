@@ -211,7 +211,7 @@ def fetch_instrumental(query: str, timeout: int = 90) -> Path | None:
         "socket_timeout": timeout,
     }
     _ydl_to_wav(opts)
-    search = f"{query} instrumental karaoke no vocals"
+    search = f"{query} Instrumental Version"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([search])
