@@ -149,6 +149,15 @@ def normalize_music_provider(value: str) -> str:
     return "soundcloud"
 
 
+def _normalize_singing_backend(value: str) -> str:
+    v = (value or "").strip().lower()
+    if v in {"local", "xtts", "gtts"}:
+        return "local"
+    if v == "rvc":
+        return "rvc"
+    return "cloud"
+
+
 def normalize_tts_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"gtts", "google-tts", "google_tts", "google"}:
@@ -334,6 +343,7 @@ class Config:
     # Singing
     singing_enabled: bool
     singing_backend: str
+    singing_fetch_instrumental: bool
     rvc_model_path: str | None
     singing_api_url: str | None
     singing_api_key: str | None
@@ -653,9 +663,8 @@ class Config:
             mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
             mc_version=parse_optional_str_env("MC_VERSION"),
             singing_enabled=parse_bool_env("SINGING_ENABLED", False),
-            singing_backend=(
-                "rvc" if os.getenv("SINGING_BACKEND", "cloud").strip().lower() == "rvc" else "cloud"
-            ),
+            singing_backend=_normalize_singing_backend(os.getenv("SINGING_BACKEND", "local")),
+            singing_fetch_instrumental=parse_bool_env("SINGING_FETCH_INSTRUMENTAL", True),
             rvc_model_path=parse_optional_str_env("RVC_MODEL_PATH"),
             singing_api_url=parse_optional_str_env("SINGING_API_URL"),
             singing_api_key=parse_optional_str_env("SINGING_API_KEY"),

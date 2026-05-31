@@ -274,12 +274,12 @@ tailwind.config = {
 
         <div class="card p-5">
           <div class="text-[13px] font-bold mb-3">Sing a Song</div>
-          <div class="text-[11px] text-nova-muted mb-2">Set SINGING_ENABLED in .env. Cloud backend needs SINGING_API_URL; RVC needs a model + a vocal reference path.</div>
+          <div class="text-[11px] text-nova-muted mb-2">Type "Artist - Title" — NovaAI fetches the lyrics, sings them in her voice, and (XTTS) auto-finds a YouTube instrumental to sing over. Songs are saved in audio/songs/ and replay instantly. Works with XTTS or gTTS.</div>
           <div class="flex gap-2 mb-2">
             <input id="sing-lyrics" type="text" placeholder="&quot;Artist - Title&quot; (fetches timed lyrics) or paste lyrics..." class="flex-1" />
             <button onclick="doSing()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Sing</button>
           </div>
-          <input id="sing-ref" type="text" placeholder="Optional backing track path (.wav/.mp3) to sing over..." class="w-full" />
+          <input id="sing-ref" type="text" placeholder="Optional: your own backing track (.wav/.mp3) — leave blank to auto-find a YouTube instrumental" class="w-full" />
         </div>
 
         <div class="card p-5 flex-1 min-h-[180px]">
