@@ -29,6 +29,7 @@ class GenerationRequest:
     history: list[dict[str, str]] | None = None
     speaker_label: str | None = None
     max_tokens: int | None = None  # cap reply length (smaller = faster, e.g. game)
+    system_override: str | None = None  # replace the full persona prompt (lean game prompt)
 
 
 @dataclass
@@ -91,6 +92,7 @@ def generate_reply(req: GenerationRequest) -> GenerationResult:
         history=history,
         speaker_label=req.speaker_label,
         max_tokens=req.max_tokens,
+        system_override=req.system_override,
     )
     combined = f"{req.user_text} {reply}"
     return GenerationResult(

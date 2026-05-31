@@ -12,6 +12,7 @@ the socket and never crashes the app.
 """
 from __future__ import annotations
 
+import random
 import re
 import socket
 import ssl
@@ -21,10 +22,22 @@ from typing import Callable
 TWITCH_HOST = "irc.chat.twitch.tv"
 TWITCH_PORT = 6697
 
-# :nick!nick@nick.tmi.twitch.tv PRIVMSG #channel :message text
+# :nick!nick@nick.tmi.twitch.tv PRIVMSG #channel :message text  (tags optional)
 _PRIVMSG_RE = re.compile(
     r"^(?:@(?P<tags>[^ ]*) )?:(?P<nick>[^!]+)![^ ]+ PRIVMSG #(?P<chan>[^ ]+) :(?P<msg>.*)$"
 )
+
+
+def normalize_oauth(token: str) -> str:
+    """Return a token in Twitch's ``oauth:xxxx`` form, tolerating common pastes."""
+    t = (token or "").strip().strip('"').strip("'")
+    if not t:
+        return ""
+    # People paste "oauth:xxx", "oauth: xxx", or just "xxx".
+    low = t.lower()
+    if low.startswith("oauth:"):
+        return "oauth:" + t[6:].strip()
+    return "oauth:" + t
 
 
 class TwitchClient:
@@ -39,14 +52,23 @@ class TwitchClient:
         self.channel = channel.strip().lstrip("#").lower()
         self.on_message = on_message
         self.on_status = on_status or (lambda _msg: None)
-        self.bot_username = (bot_username or "").strip().lower()
-        self.oauth_token = (oauth_token or "").strip()
-        self.authenticated = bool(self.oauth_token and self.bot_username)
+        self.bot_username = (bot_username or "").strip().lstrip("@").lower()
+        self.oauth_token = normalize_oauth(oauth_token or "")
+        # Authenticated only when we have BOTH a username and a token.
+        self.want_auth = bool(self.oauth_token and self.bot_username)
+        self.authenticated = self.want_auth  # may drop to False if login fails
 
         self._sock: ssl.SSLSocket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._connected = False
+        self._connected = False  # true only after Twitch's 001 welcome
+        self._auth_failed = False
+
+        if self.oauth_token and not self.bot_username:
+            self.on_status(
+                "Twitch: an OAuth token was given but no bot username — set the bot "
+                "username too, or leave both blank for anonymous read-only."
+            )
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -99,19 +121,22 @@ class TwitchClient:
         self._sock = context.wrap_socket(raw_sock, server_hostname=TWITCH_HOST)
         self._sock.settimeout(1.0)
 
-        if self.authenticated:
-            token = self.oauth_token
-            if not token.lower().startswith("oauth:"):
-                token = "oauth:" + token
-            self._raw(f"PASS {token}")
+        # Request tags/commands/membership so we get NOTICE/RECONNECT + tags.
+        self._raw("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership")
+
+        use_auth = self.want_auth and not self._auth_failed
+        if use_auth:
+            self._raw(f"PASS {self.oauth_token}")
             self._raw(f"NICK {self.bot_username}")
+            self.authenticated = True
+            self.on_status(f"Twitch: logging in as {self.bot_username}...")
         else:
-            # Anonymous read-only login.
-            self._raw("NICK justinfan12345")
-        self._raw(f"JOIN #{self.channel}")
-        self._connected = True
-        mode = "authenticated" if self.authenticated else "read-only"
-        self.on_status(f"Connected to #{self.channel} ({mode}).")
+            # Anonymous read-only login (random justinfan nick).
+            anon = f"justinfan{random.randint(10000, 99999)}"
+            self._raw(f"NICK {anon}")
+            self.authenticated = False
+            self.on_status(f"Twitch: connecting to #{self.channel} (anonymous read-only)...")
+        # NOTE: we mark _connected only when Twitch confirms with 001 (welcome).
 
     def _run(self) -> None:
         backoff = 2.0
@@ -143,7 +168,7 @@ class TwitchClient:
                 self._sock = None
                 if self._stop.is_set():
                     break
-                self.on_status(f"Disconnected ({exc}). Reconnecting...")
+                self.on_status(f"Twitch disconnected ({exc}). Reconnecting...")
                 self._stop.wait(backoff)
                 backoff = min(30.0, backoff * 1.5)
         self._connected = False
@@ -152,6 +177,7 @@ class TwitchClient:
     def _handle_line(self, line: str) -> None:
         if not line:
             return
+
         if line.startswith("PING"):
             payload = line.split(" ", 1)[1] if " " in line else ":tmi.twitch.tv"
             try:
@@ -159,6 +185,35 @@ class TwitchClient:
             except Exception:
                 pass
             return
+
+        # Twitch confirms a successful login with numeric 001 (welcome).
+        if " 001 " in line:
+            self._connected = True
+            self.on_status(
+                f"Twitch: connected to #{self.channel} "
+                f"({'authenticated' if self.authenticated else 'read-only'})."
+            )
+            return
+
+        # Twitch tells us to reconnect.
+        if line.startswith("RECONNECT") or " RECONNECT " in line:
+            raise ConnectionError("server asked to reconnect")
+
+        # Login / auth failures arrive as a NOTICE before the socket closes.
+        if "NOTICE" in line and ":" in line:
+            notice = line.rsplit(":", 1)[-1].strip()
+            low = notice.lower()
+            if "authentication failed" in low or "improperly formatted auth" in low or "login unsuccessful" in low:
+                if self.want_auth and not self._auth_failed:
+                    self._auth_failed = True
+                    self.on_status(
+                        f"Twitch login failed ({notice}). Falling back to anonymous "
+                        "read-only — fix the bot username/OAuth token to post in chat."
+                    )
+                    raise ConnectionError("auth failed -> anonymous")
+                self.on_status(f"Twitch notice: {notice}")
+            return
+
         match = _PRIVMSG_RE.match(line)
         if not match:
             return

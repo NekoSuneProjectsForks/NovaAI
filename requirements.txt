@@ -6,15 +6,23 @@ gTTS>=2.5,<3
 sounddevice>=0.5,<0.6
 SpeechRecognition>=3.16,<4
 faster-whisper>=1.2,<2
-torch>=2.11,<2.12
-torchaudio>=2.11,<2.12
-torchcodec>=0.11,<0.12
-transformers>=4.57,<5
+
+torch>=2.2,<3
+torchaudio>=2.2,<3
+
+transformers>=4.40,<5
 websockets>=11,<12
 dateparser>=1.1,<2
 pywebview[cef]>=5.3,<6
-# RAG memory embeddings (local, CPU-friendly). Optional but recommended.
-sentence-transformers>=2.7,<4
+
+sentence-transformers>=2.7,<3.3
+# Optional singing extras: auto-find / download instrumental backing tracks on
+# YouTube and merge them with the AI voice into one song.
+#   pip install yt-dlp imageio-ffmpeg
+#   yt-dlp        - downloads the backing track (or your pasted YouTube URL)
+#   imageio-ffmpeg- bundles an ffmpeg binary so NovaAI can DECODE + MERGE the
+#                   backing with the voice. Without ffmpeg, only the voice plays.
+#                   (A system ffmpeg on PATH, or FFMPEG_PATH=..., works too.)
 # Optional game-playing extras (install as needed; lazy-imported by drivers):
 #   Universal vision+input driver (Terraria/Unturned/Celeste/etc.):
 #     pip install mss pillow pydirectinput   (pydirectinput is Windows-only)

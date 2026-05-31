@@ -115,3 +115,22 @@ class VRChatDriver:
 
     def available_verbs(self) -> list[str]:
         return list(_VERBS)
+
+    def default_goal(self) -> str:
+        return "Hang out in VRChat: wander around, look at people/places, and chat with players."
+
+    def mission(self) -> str:
+        return (
+            "You are an avatar in VRChat (controlled via OSC). Do NOT use Minecraft "
+            "commands (no !mine/!searchForBlock/etc.) — they do nothing here. Move "
+            "around, look, and chat naturally with people. One action per turn."
+        )
+
+    def verbs_help(self) -> str:
+        return (
+            "Args go in args.\n"
+            "walk{seconds?} = walk forward | back{seconds?} = step back | "
+            "turn{direction:'left'|'right',seconds?} = turn | jump = jump | "
+            "say{text} = talk in the chatbox | emote{param,value?} = avatar "
+            "expression | wait = idle this turn."
+        )

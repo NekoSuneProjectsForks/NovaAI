@@ -90,3 +90,21 @@ class UniversalGameDriver:
 
     def available_verbs(self) -> list[str]:
         return list(_VERBS)
+
+    def default_goal(self) -> str:
+        return f"Play {self.name}: look at the screen and take sensible actions to progress."
+
+    def mission(self) -> str:
+        return (
+            f"You are playing {self.name} by looking at the screen and pressing keys. "
+            "Do NOT use Minecraft commands (no !mine/!searchForBlock/etc.) — those do "
+            "nothing here. Decide one keyboard/mouse action per turn based on the scene."
+        )
+
+    def verbs_help(self) -> str:
+        return (
+            "Args go in args. Keys are keyboard names (w,a,s,d,space,e,esc,1..9, etc.).\n"
+            "press{key} = tap a key | hold{key,seconds} = hold a key (move/run) | "
+            "click{button?} = mouse click | move_mouse{dx,dy}|{x,y} = aim | "
+            "say{text} = talk (if the game has chat) | wait = do nothing this turn."
+        )

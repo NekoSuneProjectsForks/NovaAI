@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -88,6 +89,165 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "logo.ico"
 _window: webview.Window | None = None
 
+# Per-driver game settings shown in the Game panel (instead of editing .env).
+# Each field maps to a Config attribute; values are persisted to app_state.
+GAME_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
+    "minecraft": {
+        "label": "Minecraft (Mineflayer + Node)",
+        "preview": True,
+        "fields": [
+            {"key": "mc_host", "label": "Server host", "type": "text"},
+            {"key": "mc_port", "label": "Server port", "type": "int"},
+            {"key": "mc_username", "label": "Bot username / MS email", "type": "text"},
+            {"key": "mc_auth", "label": "Auth mode", "type": "select", "options": ["offline", "microsoft"]},
+            {"key": "mc_owner_username", "label": "Owner username", "type": "text"},
+            {"key": "mc_help_whitelist", "label": "Help whitelist (comma-separated)", "type": "list"},
+            {"key": "mc_version", "label": "MC version (blank = auto)", "type": "text"},
+            {"key": "mc_home", "label": "Home x,y,z (optional)", "type": "text"},
+            {"key": "mc_bridge_port", "label": "Bridge port", "type": "int"},
+            {"key": "mc_viewer_port", "label": "Live-view port", "type": "int"},
+            {"key": "mc_viewer_first_person", "label": "First-person view", "type": "bool"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "universal": {
+        "label": "Universal (vision + keyboard)",
+        "preview": False,
+        "fields": [
+            {"key": "game_universal_name", "label": "Game name (e.g. Unturned, Terraria)", "type": "text"},
+            {"key": "vision_model", "label": "Vision model (Ollama, e.g. moondream)", "type": "text"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "vrchat": {
+        "label": "VRChat (OSC)",
+        "preview": False,
+        "fields": [
+            {"key": "vrchat_osc_host", "label": "OSC host", "type": "text"},
+            {"key": "vrchat_osc_port", "label": "OSC port", "type": "int"},
+            {"key": "vision_model", "label": "Vision model (optional)", "type": "text"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "factorio": {
+        "label": "Factorio (RCON)",
+        "preview": False,
+        "fields": [
+            {"key": "factorio_rcon_host", "label": "RCON host", "type": "text"},
+            {"key": "factorio_rcon_port", "label": "RCON port", "type": "int"},
+            {"key": "factorio_rcon_password", "label": "RCON password", "type": "password"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+    "osu": {
+        "label": "osu! (offline / solo only)",
+        "preview": False,
+        "fields": [
+            {"key": "osu_allow_online", "label": "Allow online (BANNABLE — at your own risk)", "type": "bool"},
+            {"key": "vision_model", "label": "Vision model (Ollama)", "type": "text"},
+            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
+        ],
+    },
+}
+_GAME_FIELD_TYPES: dict[str, str] = {
+    f["key"]: f["type"] for meta in GAME_SETTINGS_SCHEMA.values() for f in meta["fields"]
+}
+
+
+# General app settings shown in the Settings panel (override .env, persisted).
+# "model" fields render with an auto-detected dropdown for their category.
+APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
+    "llm": {
+        "label": "AI Provider & Models",
+        "fields": [
+            {"key": "llm_provider", "label": "Provider", "type": "select",
+             "options": ["ollama", "openai", "claude-code", "codex", "cli"]},
+            {"key": "model", "label": "Chat model", "type": "model", "category": "chat"},
+            {"key": "vision_model", "label": "Vision model", "type": "model", "category": "vision"},
+            {"key": "rag_embedding_provider", "label": "Embedding provider", "type": "select",
+             "options": ["local", "ollama", "openai"]},
+            {"key": "rag_embedding_model", "label": "Embedding model", "type": "model", "category": "embedding"},
+            {"key": "llm_api_url", "label": "API URL (openai/LiteLLM)", "type": "text"},
+            {"key": "llm_api_key", "label": "API key", "type": "password"},
+            {"key": "temperature", "label": "Temperature", "type": "float"},
+        ],
+    },
+    "twitch": {
+        "label": "Twitch",
+        "fields": [
+            {"key": "twitch_channel", "label": "Channel (no #)", "type": "text"},
+            {"key": "twitch_bot_username", "label": "Bot username (blank = anonymous read-only)", "type": "text"},
+            {"key": "twitch_oauth_token", "label": "OAuth token (blank = anonymous)", "type": "password"},
+            {"key": "twitch_reply_mode", "label": "Reply mode", "type": "select",
+             "options": ["mention", "all", "command"]},
+            {"key": "twitch_reply_cooldown_seconds", "label": "Reply cooldown (sec)", "type": "float"},
+        ],
+    },
+    "voice": {
+        "label": "Voice (TTS)",
+        "fields": [
+            {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
+            {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
+            {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
+            {"key": "xtts_speed", "label": "Speed", "type": "float"},
+            {"key": "tts_language", "label": "Language", "type": "text"},
+        ],
+    },
+    "stt": {
+        "label": "Speech-to-Text",
+        "fields": [
+            {"key": "stt_provider", "label": "STT engine", "type": "select",
+             "options": ["faster-whisper", "google"]},
+            {"key": "stt_model", "label": "Whisper model", "type": "text"},
+            {"key": "stt_language", "label": "Language", "type": "text"},
+        ],
+    },
+    "media": {
+        "label": "Media",
+        "fields": [
+            {"key": "media_region", "label": "Region", "type": "text"},
+            {"key": "music_provider_default", "label": "Music provider", "type": "select",
+             "options": ["soundcloud", "radio", "deezer", "spotify"]},
+            {"key": "soundcloud_stream_endpoint", "label": "Stream endpoint", "type": "text"},
+        ],
+    },
+    "singing": {
+        "label": "Singing",
+        "fields": [
+            {"key": "singing_enabled", "label": "Enable singing", "type": "bool"},
+            {"key": "singing_backend", "label": "Backend", "type": "select",
+             "options": ["local", "rvc", "cloud"]},
+            {"key": "rvc_model_path", "label": "RVC model .pth (rvc)", "type": "text"},
+            {"key": "singing_api_url", "label": "Singing API URL (cloud)", "type": "text"},
+            {"key": "singing_api_key", "label": "Singing API key (cloud)", "type": "password"},
+        ],
+    },
+}
+_APP_FIELD_TYPES: dict[str, str] = {
+    f["key"]: f["type"] for meta in APP_SETTINGS_SCHEMA.values() for f in meta["fields"]
+}
+
+
+def _coerce_game_setting(value: Any, ftype: str) -> Any:
+    if ftype == "int":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    if ftype == "float":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 1.0
+    if ftype == "bool":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    if ftype == "list":
+        items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+        return tuple(str(s).strip() for s in items if str(s).strip())
+    return str(value).strip()
+
 
 class Api:
     """Python backend exposed to JavaScript via pywebview.api."""
@@ -118,11 +278,14 @@ class Api:
         self._last_amplitude_emit = 0.0
         # Game agent
         self.game_agent: Any = None
+        self.game_driver_key: str | None = None  # the actually-running driver
 
     def initialize(self) -> dict[str, Any]:
         """Heavy init — called from JS once the loading screen is visible."""
         ensure_runtime_dirs()
         self.config = Config.from_env()
+        self._apply_saved_app_settings()
+        self._apply_saved_game_settings()
         self.memory = MemoryStore(self.config)
         self.active_profile_id = get_active_profile_id()
         self.profile = load_profile() or {}
@@ -829,6 +992,13 @@ class Api:
     def _game_narrate(self, text: str, emotion: str = "neutral") -> None:
         companion = self.profile.get("companion_name", "NovaAI")
         self._push_chat(companion, text, "assistant")
+        # Mirror the thought to the game bridge's Live View dashboard.
+        drv = getattr(self.game_agent, "driver", None) if self.game_agent else None
+        if drv is not None and hasattr(drv, "push_thought"):
+            try:
+                drv.push_thought(text)
+            except Exception:
+                pass
         # Echo to Twitch chat if connected + authenticated.
         if self.twitch and self.twitch.authenticated:
             try:
@@ -910,10 +1080,259 @@ class Api:
             return f"Got it — doing that in-game now: {user_text.strip()}"
         return None
 
+    # ── general settings (Settings panel) ───────────────────────────────────────
+
+    def _ollama_base(self) -> str:
+        url = (self.config.llm_api_url if self.config else "") or ""
+        # OLLAMA_API_URL env wins for the local daemon base.
+        env_url = os.environ.get("OLLAMA_API_URL", "")
+        for candidate in (env_url, url, "http://127.0.0.1:11434/api/chat"):
+            if candidate and "/api/" in candidate:
+                return candidate.split("/api/")[0].rstrip("/")
+        return "http://127.0.0.1:11434"
+
+    def _reresolve_llm_url(self) -> None:
+        """Recompute llm_api_url after a provider/url change."""
+        from .config import resolve_llm_api_url
+
+        provider = self.config.llm_provider
+        if provider == "ollama":
+            raw = os.environ.get("OLLAMA_API_URL") or "http://127.0.0.1:11434/api/chat"
+        elif provider == "openai":
+            raw = self.config.llm_api_url or os.environ.get("OPENAI_API_URL")
+        else:
+            raw = None
+        self.config.llm_api_url = resolve_llm_api_url(provider, raw)
+
+    def _apply_saved_app_settings(self) -> None:
+        if not self.config:
+            return
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("app_settings", "{}") or "{}")
+        except Exception:
+            return
+        for key, val in store.items():
+            ftype = _APP_FIELD_TYPES.get(key)
+            if ftype is not None:
+                try:
+                    setattr(self.config, key, _coerce_game_setting(val, ftype))
+                except Exception:
+                    pass
+        self._reresolve_llm_url()
+
+    def restart_app(self) -> dict[str, Any]:
+        """Relaunch NovaAI (applies any settings/code changes cleanly)."""
+        def _do_restart() -> None:
+            time.sleep(0.4)
+            # Stop game/stream/avatar cleanly so ports free up before relaunch.
+            try:
+                if self.game_agent:
+                    self.game_agent.stop()
+            except Exception:
+                pass
+            try:
+                if self.twitch:
+                    self.twitch.stop()
+            except Exception:
+                pass
+            try:
+                cwd = str(Path(__file__).resolve().parent.parent)
+                subprocess.Popen([sys.executable] + sys.argv, cwd=cwd)
+            except Exception:
+                pass
+            os._exit(0)
+
+        threading.Thread(target=_do_restart, daemon=True).start()
+        return {"ok": True, "msg": "Restarting NovaAI..."}
+
+    def get_app_settings(self) -> dict[str, Any]:
+        sections: dict[str, Any] = {}
+        for name, meta in APP_SETTINGS_SCHEMA.items():
+            fields = []
+            for f in meta["fields"]:
+                val = getattr(self.config, f["key"], "") if self.config else ""
+                if val is None:
+                    val = ""
+                fields.append({**f, "value": val})
+            sections[name] = {"label": meta["label"], "fields": fields}
+        return {"sections": sections}
+
+    def save_app_settings(self, section: str, values: dict[str, Any]) -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        meta = APP_SETTINGS_SCHEMA.get(section)
+        if not meta:
+            return {"ok": False, "msg": f"Unknown section: {section}"}
+        applied: dict[str, Any] = {}
+        for f in meta["fields"]:
+            if f["key"] in (values or {}):
+                coerced = _coerce_game_setting(values[f["key"]], f["type"])
+                setattr(self.config, f["key"], coerced)
+                applied[f["key"]] = list(coerced) if isinstance(coerced, tuple) else coerced
+        if section == "llm":
+            self._reresolve_llm_url()
+            if self.memory:
+                self.memory.config = self.config  # pick up new embedding settings
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("app_settings", "{}") or "{}")
+            store.update(applied)
+            database.set_state("app_settings", json.dumps(store))
+        except Exception:
+            pass
+        self._push_state()
+        return {"ok": True, "msg": "Settings saved."}
+
+    # ── model auto-detect ───────────────────────────────────────────────────────
+
+    _VISION_HINTS = ("llava", "moondream", "vision", "bakllava", "minicpm-v",
+                     "qwen2-vl", "qwen2.5vl", "janus", "llama3.2-vision")
+    _EMBED_HINTS = ("embed", "bge-", "bge:", "nomic-embed", "all-minilm", "minilm",
+                    "gte-", "e5-", "mxbai-embed", "snowflake-arctic-embed", "embeddinggemma")
+
+    @classmethod
+    def _categorize_model(cls, name: str) -> str:
+        ln = name.lower()
+        if any(h in ln for h in cls._EMBED_HINTS) or "embedding" in ln:
+            return "embedding"
+        if any(h in ln for h in cls._VISION_HINTS):
+            return "vision"
+        return "chat"
+
+    def _ollama_tags(self) -> list[str]:
+        try:
+            resp = requests.get(self._ollama_base() + "/api/tags", timeout=5)
+            resp.raise_for_status()
+            return [m.get("name", "") for m in resp.json().get("models", []) if m.get("name")]
+        except Exception:
+            return []
+
+    def _openai_models(self) -> list[str]:
+        """List models from the configured OpenAI-compatible / LiteLLM endpoint.
+
+        Works whenever an API URL is set (e.g. a LiteLLM gateway), independent of
+        the active provider, so the dropdowns can always show what's available.
+        """
+        if not self.config:
+            return []
+        raw = (
+            os.environ.get("LLM_API_URL")
+            or os.environ.get("OPENAI_API_URL")
+            or (self.config.llm_api_url if self.config.llm_provider == "openai" else "")
+        )
+        if not raw or not raw.startswith("http"):
+            return []
+        base = raw.split("/chat/completions")[0].rstrip("/")
+        url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
+        headers = {}
+        key = self.config.llm_api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=8)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data", data if isinstance(data, list) else [])
+            return [m.get("id", "") for m in items if isinstance(m, dict) and m.get("id")]
+        except Exception:
+            return []
+
+    def get_models(self) -> dict[str, Any]:
+        """Auto-detect available models live, grouped chat/vision/embedding.
+
+        Always queries the API(s) fresh so newly-added models show up: the local
+        Ollama daemon AND any configured OpenAI/LiteLLM gateway.
+        """
+        buckets: dict[str, set] = {"chat": set(), "vision": set(), "embedding": set()}
+        for name in self._ollama_tags():
+            buckets[self._categorize_model(name)].add(name)
+        for name in self._openai_models():          # LiteLLM/OpenAI, if URL set
+            buckets[self._categorize_model(name)].add(name)
+        provider = self.config.llm_provider if self.config else "ollama"
+        if provider == "claude-code":
+            buckets["chat"].update(["sonnet", "opus", "haiku"])
+        elif provider == "codex":
+            buckets["chat"].update(["gpt-5-codex", "gpt-5", "o4-mini"])
+        return {
+            "provider": provider,
+            "chat": sorted(buckets["chat"]),
+            "vision": sorted(buckets["vision"]),
+            "embedding": sorted(buckets["embedding"]),
+        }
+
+    def _apply_saved_game_settings(self) -> None:
+        """Apply game settings saved from the panel (override .env)."""
+        if not self.config:
+            return
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("game_settings", "{}") or "{}")
+        except Exception:
+            return
+        for key, val in store.items():
+            if key == "game_driver":
+                self.config.game_driver = str(val)
+                continue
+            ftype = _GAME_FIELD_TYPES.get(key)
+            if ftype is not None:
+                try:
+                    setattr(self.config, key, _coerce_game_setting(val, ftype))
+                except Exception:
+                    pass
+
+    def get_game_settings(self) -> dict[str, Any]:
+        drivers: dict[str, Any] = {}
+        for drv, meta in GAME_SETTINGS_SCHEMA.items():
+            fields = []
+            for f in meta["fields"]:
+                val = getattr(self.config, f["key"], "") if self.config else ""
+                if f["type"] == "list":
+                    val = ", ".join(val) if isinstance(val, (list, tuple)) else (val or "")
+                if val is None:
+                    val = ""
+                fields.append({**f, "value": val})
+            drivers[drv] = {"label": meta["label"], "preview": meta["preview"], "fields": fields}
+        return {
+            "drivers": drivers,
+            "current": self.config.game_driver if self.config else "minecraft",
+        }
+
+    def save_game_settings(self, driver: str, values: dict[str, Any]) -> dict[str, Any]:
+        if (err := self._not_ready()):
+            return err
+        meta = GAME_SETTINGS_SCHEMA.get(driver)
+        if not meta:
+            return {"ok": False, "msg": f"Unknown driver: {driver}"}
+        applied: dict[str, Any] = {}
+        for f in meta["fields"]:
+            if f["key"] in (values or {}):
+                coerced = _coerce_game_setting(values[f["key"]], f["type"])
+                setattr(self.config, f["key"], coerced)
+                applied[f["key"]] = list(coerced) if isinstance(coerced, tuple) else coerced
+        self.config.game_driver = driver
+        try:
+            from . import database
+
+            store = json.loads(database.get_state("game_settings", "{}") or "{}")
+            store.update(applied)
+            store["game_driver"] = driver
+            database.set_state("game_settings", json.dumps(store))
+        except Exception:
+            pass
+        return {"ok": True, "msg": "Game settings saved."}
+
     def get_game_status(self) -> dict[str, Any]:
         running = bool(self.game_agent and self.game_agent.is_running())
         viewer_url = ""
-        driver = self.config.game_driver if self.config else "minecraft"
+        # Report the actually-running driver when there is one, else the configured
+        # default — otherwise the panel always snaps back to the .env default.
+        driver = getattr(self, "game_driver_key", None) or (
+            self.config.game_driver if self.config else "minecraft"
+        )
         if running and self.game_agent is not None:
             drv = getattr(self.game_agent, "driver", None)
             if drv is not None and hasattr(drv, "viewer_url"):
@@ -952,7 +1371,7 @@ class Api:
         if driver_name == "universal":
             from .games.universal import UniversalGameDriver
 
-            return UniversalGameDriver(self.config)
+            return UniversalGameDriver(self.config, game_name=self.config.game_universal_name)
         if driver_name == "osu":
             from .games.osu import OsuDriver
 
@@ -970,15 +1389,31 @@ class Api:
     def start_game(self, goal: str = "", driver: str = "") -> dict[str, Any]:
         if (err := self._not_ready()):
             return err
+        driver_name = (driver or self.config.game_driver or "minecraft").strip().lower()
+        # If a game is already running, stop it first so switching drivers works
+        # (otherwise the old game just keeps running).
         if self.game_agent and self.game_agent.is_running():
-            return {"ok": False, "msg": "Game agent is already running."}
+            if getattr(self, "game_driver_key", None) == driver_name:
+                return {"ok": False, "msg": f"{driver_name} is already running."}
+            self.stop_game()
+            time.sleep(0.5)
         try:
             from .games.agent import GameAgent
 
-            driver_name = (driver or self.config.game_driver or "minecraft").strip().lower()
             game_driver = self._build_game_driver(driver_name)
             if game_driver is None:
                 return {"ok": False, "msg": f"Unknown game driver: {driver_name}"}
+            # Remember + persist the chosen driver so status/UI reflect reality.
+            self.game_driver_key = driver_name
+            self.config.game_driver = driver_name
+            try:
+                from . import database
+
+                store = json.loads(database.get_state("game_settings", "{}") or "{}")
+                store["game_driver"] = driver_name
+                database.set_state("game_settings", json.dumps(store))
+            except Exception:
+                pass
             if driver_name == "osu" and not self.config.osu_allow_online:
                 self._push_chat(
                     "System",
@@ -1014,6 +1449,7 @@ class Api:
         # Drop the reference first so status flips to stopped immediately; the
         # daemon thread unwinds on its own (stop() also aborts the bridge).
         self.game_agent = None
+        self.game_driver_key = None
         if agent:
             try:
                 agent.stop()

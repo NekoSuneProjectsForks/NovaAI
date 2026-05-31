@@ -149,6 +149,15 @@ def normalize_music_provider(value: str) -> str:
     return "soundcloud"
 
 
+def _normalize_singing_backend(value: str) -> str:
+    v = (value or "").strip().lower()
+    if v in {"local", "xtts", "gtts"}:
+        return "local"
+    if v == "rvc":
+        return "rvc"
+    return "cloud"
+
+
 def normalize_tts_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"gtts", "google-tts", "google_tts", "google"}:
@@ -321,7 +330,9 @@ class Config:
     mc_auth: str
     mc_bridge_port: int
     mc_viewer_port: int
+    mc_inventory_port: int
     mc_viewer_first_person: bool
+    mc_viewer_version: str | None
     node_path: str | None
     owner_name: str
     mc_owner_username: str
@@ -332,6 +343,7 @@ class Config:
     # Singing
     singing_enabled: bool
     singing_backend: str
+    singing_fetch_instrumental: bool
     rvc_model_path: str | None
     singing_api_url: str | None
     singing_api_key: str | None
@@ -343,6 +355,7 @@ class Config:
     factorio_rcon_password: str | None
     vrchat_osc_host: str
     vrchat_osc_port: int
+    game_universal_name: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -631,7 +644,9 @@ class Config:
             mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
             mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
             mc_viewer_port=int(os.getenv("MC_VIEWER_PORT", "8768")),
+            mc_inventory_port=int(os.getenv("MC_INVENTORY_PORT", "8769")),
             mc_viewer_first_person=parse_bool_env("MC_VIEWER_FIRST_PERSON", False),
+            mc_viewer_version=parse_optional_str_env("MC_VIEWER_VERSION"),
             node_path=parse_optional_str_env("NODE_PATH"),
             owner_name=(parse_optional_str_env("OWNER_NAME") or ""),
             mc_owner_username=(
@@ -648,9 +663,8 @@ class Config:
             mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
             mc_version=parse_optional_str_env("MC_VERSION"),
             singing_enabled=parse_bool_env("SINGING_ENABLED", False),
-            singing_backend=(
-                "rvc" if os.getenv("SINGING_BACKEND", "cloud").strip().lower() == "rvc" else "cloud"
-            ),
+            singing_backend=_normalize_singing_backend(os.getenv("SINGING_BACKEND", "local")),
+            singing_fetch_instrumental=parse_bool_env("SINGING_FETCH_INSTRUMENTAL", True),
             rvc_model_path=parse_optional_str_env("RVC_MODEL_PATH"),
             singing_api_url=parse_optional_str_env("SINGING_API_URL"),
             singing_api_key=parse_optional_str_env("SINGING_API_KEY"),
@@ -661,4 +675,5 @@ class Config:
             factorio_rcon_password=parse_optional_str_env("FACTORIO_RCON_PASSWORD"),
             vrchat_osc_host=os.getenv("VRCHAT_OSC_HOST", "127.0.0.1").strip() or "127.0.0.1",
             vrchat_osc_port=int(os.getenv("VRCHAT_OSC_PORT", "9000")),
+            game_universal_name=os.getenv("GAME_UNIVERSAL_NAME", "a PC game").strip() or "a PC game",
         )
