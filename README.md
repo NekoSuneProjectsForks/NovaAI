@@ -115,7 +115,7 @@ NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** �
 | 📅 **Calendar** | Events with date/time tracking |
 | 🛒 **Shopping** | Checkbox shopping list |
 | ✅ **To-Do** | Task list with done/delete |
-| 💜 **Stream** | Connect Twitch chat, watch the live feed, set the reply mode |
+| 💜 **Stream** | Connect Twitch chat, watch the live feed, set the reply mode + who can talk (everyone / subscribers / moderators) |
 | 🧍 **Avatar** | Upload a VRM, open the OBS window, test emotions, toggle lip-sync |
 | 🎮 **Game** | Pick a driver (Minecraft/universal/etc.), set a goal, watch the live view |
 | 🎤 **Sing** | Type a song, attach/auto-find a backing track, replay saved songs |
@@ -151,7 +151,7 @@ NovaAI **remembers across sessions** using retrieval-augmented memory — not fi
 A real 3D avatar (three-vrm) that **lip-syncs to the voice**, changes expression with the mood, breathes/blinks on idle, and even dances.
 
 - Upload any **`.vrm`** model from the **Avatar** page
-- **20+ expressions** with matching body language — happy, excited, laugh, proud, smug, **blush, shy, love, flirty, wink**, sad, cry, pout, angry, anxious, scared, surprised, shocked, confused, relaxed, calm, sleepy — plus visemes driven from live TTS amplitude
+- **20+ expressions** with matching body language — happy, excited, laugh, proud, smug, **blush, shy, love, flirty, wink**, sad, cry, pout, angry, anxious, scared, surprised, shocked, confused, relaxed, calm, sleepy, and **sleeping** (lies down with eyes closed) — plus visemes driven from live TTS amplitude
 - Custom expressions like **blush / wink / love** use the model's own blendshapes when present, and gracefully fall back to a matching preset + pose otherwise
 - Expressions are auto-picked from the mood of each reply, or test them from the **Avatar** page buttons
 - **OBS-ready**: open the transparent browser window as a Browser Source for streaming
@@ -362,6 +362,7 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `TWITCH_BOT_USERNAME` | *(none)* | Bot account name (blank = anonymous read-only) |
 | `TWITCH_OAUTH_TOKEN` | *(none)* | `oauth:...` token so it can post replies |
 | `TWITCH_REPLY_MODE` | `mention` | `mention`, `command` (`!ask`), or `all` |
+| `TWITCH_ALLOWED_ROLES` | `everyone` | Who NovaAI replies to: `everyone`, `subscribers` (subs/VIPs/mods/broadcaster), or `moderators` (mods/broadcaster). All chat still shows in the feed. |
 | `TWITCH_REPLY_COOLDOWN` | `8` | Seconds between replies |
 
 ### 🧬 RAG Memory

@@ -190,6 +190,8 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
             {"key": "twitch_oauth_token", "label": "OAuth token (blank = anonymous)", "type": "password"},
             {"key": "twitch_reply_mode", "label": "Reply mode", "type": "select",
              "options": ["mention", "all", "command"]},
+            {"key": "twitch_allowed_roles", "label": "Who can talk to NovaAI", "type": "select",
+             "options": ["everyone", "subscribers", "moderators"]},
             {"key": "twitch_reply_cooldown_seconds", "label": "Reply cooldown (sec)", "type": "float"},
         ],
     },
@@ -784,15 +786,28 @@ class Api:
         self._push_state()
         return {"ok": True, "msg": "Stream disconnected."}
 
-    def _on_twitch_message(self, username: str, text: str) -> None:
-        # Show the raw chat line in the Stream feed.
+    def _on_twitch_message(self, username: str, text: str, roles: set[str] | None = None) -> None:
+        roles = roles or set()
+        # Show the raw chat line in the Stream feed (the streamer sees all chat).
         payload = json.dumps({"username": username, "text": text})
         self._js(f"window.__onStreamMessage({payload})")
-        if self._should_reply_to(text):
+        # Only reply when the chatter's role is allowed AND the reply-mode matches.
+        if self._role_allowed(roles) and self._should_reply_to(text):
             try:
                 self._stream_queue.put_nowait((username, text))
             except queue.Full:
                 pass
+
+    def _role_allowed(self, roles: set[str]) -> bool:
+        """Gate replies by chatter role per twitch_allowed_roles."""
+        mode = getattr(self.config, "twitch_allowed_roles", "everyone") if self.config else "everyone"
+        if mode == "everyone":
+            return True
+        if mode == "moderators":
+            return bool(roles & {"moderator", "broadcaster"})
+        if mode == "subscribers":
+            return bool(roles & {"subscriber", "vip", "moderator", "broadcaster"})
+        return True
 
     def _should_reply_to(self, text: str) -> bool:
         cfg = self.config

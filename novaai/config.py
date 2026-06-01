@@ -174,6 +174,21 @@ def normalize_twitch_reply_mode(value: str) -> str:
     return "mention"
 
 
+def normalize_twitch_allowed_roles(value: str | None) -> str:
+    """Who NovaAI is allowed to reply to in Twitch chat.
+
+    everyone     -> anyone
+    subscribers  -> subscribers, VIPs, mods, and the broadcaster
+    moderators   -> mods and the broadcaster only
+    """
+    normalized = (value or "").strip().lower()
+    if normalized in {"subscribers", "subscriber", "subs", "sub", "subsonly", "subs_only"}:
+        return "subscribers"
+    if normalized in {"moderators", "moderator", "mods", "mod", "modsonly", "mods_only"}:
+        return "moderators"
+    return "everyone"
+
+
 def normalize_rag_embedding_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
@@ -314,6 +329,7 @@ class Config:
     twitch_bot_username: str
     twitch_oauth_token: str | None
     twitch_reply_mode: str
+    twitch_allowed_roles: str
     twitch_reply_cooldown_seconds: float
     # RAG memory
     rag_enabled: bool
@@ -635,6 +651,9 @@ class Config:
             twitch_oauth_token=parse_optional_str_env("TWITCH_OAUTH_TOKEN"),
             twitch_reply_mode=normalize_twitch_reply_mode(
                 os.getenv("TWITCH_REPLY_MODE", "mention")
+            ),
+            twitch_allowed_roles=normalize_twitch_allowed_roles(
+                os.getenv("TWITCH_ALLOWED_ROLES", "everyone")
             ),
             twitch_reply_cooldown_seconds=max(
                 0.0, float(os.getenv("TWITCH_REPLY_COOLDOWN", "8"))

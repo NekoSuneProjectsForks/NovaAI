@@ -313,8 +313,24 @@
     relaxed:   { base: ['relaxed', 1] },
     calm:      { base: ['relaxed', 0.7] },
     sleepy:    { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
+    sleeping:  { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
+    sleep:     { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
     fun:       { base: ['relaxed', 1] },
   };
+
+  // "sleeping"/"sleep" lays the avatar down (as if in bed) with eyes closed.
+  // Tracked separately so we only re-rotate + reframe on the state change.
+  let lyingDown = false;
+  function setSleeping(on) {
+    if (on === lyingDown || !currentVrm) return;
+    lyingDown = on;
+    // Base upright pose faces the camera at (0, PI, 0); add a Z quarter-turn to
+    // lie horizontally across the frame. (If she lies the wrong way, flip the
+    // sign of the Z term.) Reframe so the lying silhouette stays centered.
+    currentVrm.scene.rotation.set(0, Math.PI, on ? Math.PI / 2 : 0);
+    currentVrm.scene.updateWorldMatrix(true, true);
+    frameAvatar();
+  }
 
   // Cache the lowercase set of expression names a model actually exposes so we
   // only apply custom blendshapes (blush/wink/…) the VRM truly has.
@@ -337,6 +353,7 @@
 
   function applyExpression(expression) {
     currentEmotion = String(expression || 'neutral').toLowerCase();
+    setSleeping(currentEmotion === 'sleeping' || currentEmotion === 'sleep');
     if (!currentVrm || !currentVrm.expressionManager) return;
     const em = currentVrm.expressionManager;
     const names = availableExpressionNames(em);
@@ -398,6 +415,8 @@
     relaxed:   {},
     calm:      {},
     sleepy:    { head: { x: 0.22, z: 0.10 }, chest: { x: 0.08 } },
+    sleeping:  { head: { x: 0.10, z: 0.06 }, chest: { x: 0.05 } },
+    sleep:     { head: { x: 0.10, z: 0.06 }, chest: { x: 0.05 } },
     fun:       {},
     neutral:   {},
   };
@@ -500,8 +519,12 @@
       // Body pose (rest pose + emotion + idle) and periodic blink.
       updatePose(delta, t);
       if (em) {
-        const phase = t % 4.0;
-        const blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+        // Eyes stay shut while sleeping; otherwise blink periodically.
+        let blink = 1;
+        if (!lyingDown) {
+          const phase = t % 4.0;
+          blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+        }
         try { em.setValue('blink', blink); } catch (e) {}
       }
 
