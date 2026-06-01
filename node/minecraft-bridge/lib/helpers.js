@@ -24,6 +24,19 @@ function playerEntity(name) {
   return null;
 }
 
+// Is a player on the server right now? Uses the tablist (bot.players), which
+// lists everyone online even when their entity isn't loaded near the bot. This
+// lets the bot tell "owner is offline" from "owner is just out of render range".
+function playerOnline(name) {
+  const bot = state.bot;
+  const want = String(name || owner || '').toLowerCase();
+  if (!want || !bot || !bot.players) return false;
+  for (const uname in bot.players) {
+    if (uname.toLowerCase() === want) return true;
+  }
+  return false;
+}
+
 function isHostile(entity) {
   return entity && entity.name && HOSTILES.has(String(entity.name).toLowerCase());
 }
@@ -227,6 +240,7 @@ function observe() {
   return {
     connected: true,
     owner: owner || null,
+    ownerOnline: owner ? playerOnline(owner) : false,
     ownerVisible: !!ownerEnt,
     ownerDistance: ownerEnt ? Math.round(ownerEnt.position.distanceTo(pos)) : null,
     health: bot.health,
@@ -256,7 +270,7 @@ function feedData() {
 }
 
 module.exports = {
-  playerEntity, isHostile, nearestVillager, nearestHostile, entityByName,
+  playerEntity, playerOnline, isHostile, nearestVillager, nearestHostile, entityByName,
   armorSlotForItem, armorTier, isFood, aliasName, resolveItem, toolTier,
   idsForNames, chestBlockIds, findInventory, countInInventory,
   isExposed, cropAge, isMatureCrop, observe, feedData,
