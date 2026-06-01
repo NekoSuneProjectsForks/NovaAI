@@ -498,6 +498,17 @@ class Api:
             return {"ok": False, "msg": msg}
         finally:
             self._release()
+            # Re-arm hands-free listening no matter how the turn ended — normal
+            # reply, early-handled request, timeout, or a backend error. Without
+            # this, any failure mid-turn silently ends the conversation and Nova
+            # stops responding to speech after the first prompt.
+            if (
+                self.hands_free_enabled
+                and not self.mic_muted
+                and self.session_started
+                and not self._stopped()
+            ):
+                threading.Thread(target=self._auto_listen, daemon=True).start()
 
     def _auto_listen(self) -> None:
         time.sleep(0.3)
@@ -639,9 +650,10 @@ class Api:
             self._push_status("Stopped.")
             return "Stopped."
 
+        # Hands-free re-listen is re-armed by start_listen()'s finally block so
+        # it fires on every exit path (including errors), not just here.
         if from_voice and self.hands_free_enabled and not self.mic_muted:
             self._push_status("Listening...")
-            threading.Thread(target=self._auto_listen, daemon=True).start()
             return "Hands-free listening."
 
         self._push_status("Ready.")
