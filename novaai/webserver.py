@@ -304,6 +304,12 @@ def serve(host: str | None = None, port: int | None = None) -> None:
         except ValueError:
             port = DEFAULT_PORT
 
+    # Web mode is reachable from other devices, so the sibling services (avatar
+    # overlay on 8766/8765, Minecraft live view on 8768) should bind to the same
+    # interface the web UI does. The browser builds their URLs from its own
+    # location, so they match whatever host you used (LAN IP, Tailscale, tunnel).
+    os.environ.setdefault("NOVA_BIND_HOST", host)
+
     ensure_runtime_dirs()
 
     clients = _SseClients()

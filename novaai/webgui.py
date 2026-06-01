@@ -63,6 +63,7 @@ from .media import handle_media_request
 from .media_player import stop_media_playback
 from .models import SessionState
 from .storage import (
+    _safe_profile_id,
     append_history,
     create_profile,
     delete_profile,
@@ -978,15 +979,20 @@ class Api:
             return {"ok": False, "msg": "Enable the avatar first."}
         url = self.avatar.get_frontend_url()
         block = self._avatar_profile_block()
+        path = "/?transparent=1" if block.get("transparent_bg") else "/"
         if block.get("transparent_bg"):
             url = url + "?transparent=1"
-        try:
-            import webbrowser
+        # In headless web mode the browser opens the URL itself (built from its
+        # own location, so it matches the LAN IP / Tailscale / tunnel host). Only
+        # open server-side for the local desktop GUI.
+        if _emit_js is None:
+            try:
+                import webbrowser
 
-            webbrowser.open(url)
-        except Exception:
-            pass
-        return {"ok": True, "url": url}
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return {"ok": True, "url": url, "port": self.avatar.http_port, "path": path}
 
     def set_avatar_option(self, key: str, value: Any) -> dict[str, Any]:
         block = self._avatar_profile_block()
@@ -1377,6 +1383,7 @@ class Api:
             "driver": driver,
             "goal": self.game_agent.goal if self.game_agent else "",
             "viewer_url": viewer_url,
+            "viewer_port": self.config.mc_viewer_port if self.config else None,
         }
 
     def open_game_view(self) -> dict[str, Any]:
@@ -1384,13 +1391,17 @@ class Api:
         url = status.get("viewer_url")
         if not url:
             return {"ok": False, "msg": "Live view is only available while a Minecraft game is running."}
-        try:
-            import webbrowser
+        # In headless web mode the browser opens the URL itself (built from its
+        # own location, so it matches the LAN IP / Tailscale / tunnel host). Only
+        # open server-side for the local desktop GUI.
+        if _emit_js is None:
+            try:
+                import webbrowser
 
-            webbrowser.open(url)
-        except Exception:
-            pass
-        return {"ok": True, "url": url}
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return {"ok": True, "url": url, "port": status.get("viewer_port")}
 
     def _build_game_driver(self, driver_name: str):
         if driver_name == "minecraft":
@@ -1721,6 +1732,54 @@ class Api:
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
 
+    def export_profile(self, profile_id: str) -> dict[str, Any]:
+        """Return a profile wrapped in a portable envelope for download.
+
+        The frontend turns this into a .json file the user can move to another
+        machine (e.g. local PC -> Raspberry Pi) and import there.
+        """
+        try:
+            profile = load_profile_by_id(profile_id)
+            name = str(profile.get("profile_name", profile_id)) or profile_id
+            safe = _safe_profile_id(name)
+            return {
+                "ok": True,
+                "filename": f"{safe}.nova-profile.json",
+                "data": {
+                    "nova_profile_export": True,
+                    "version": 1,
+                    "profile": profile,
+                },
+            }
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def import_profile(self, data: Any, name: str = "") -> dict[str, Any]:
+        """Create a new profile from imported JSON (envelope or raw profile).
+
+        Accepts either the export envelope produced by ``export_profile`` or a
+        bare profile dict. The imported profile always becomes a NEW profile
+        (its id is de-duplicated), so importing never overwrites an existing one.
+        """
+        try:
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                return {"ok": False, "msg": "Invalid profile file."}
+            src = data.get("profile") if isinstance(data.get("profile"), dict) else data
+            if not isinstance(src, dict) or not src:
+                return {"ok": False, "msg": "Invalid profile file."}
+            profile_name = (
+                str(name).strip()
+                or str(src.get("profile_name", "")).strip()
+                or str(src.get("companion_name", "")).strip()
+                or "Imported Profile"
+            )
+            p = create_profile(profile_name, base_profile=src)
+            return {"ok": True, "profile_id": p["profile_id"], "profile_name": p["profile_name"]}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
     def get_profile_detail(self, profile_id: str) -> dict[str, Any]:
         try:
             return load_profile_by_id(profile_id)
@@ -1899,6 +1958,10 @@ def main() -> None:
             "Install it with:  pip install -r requirements-gui.txt\n"
             "Or run the headless browser UI instead:  python app.py --web"
         )
+    # The desktop GUI is a local app, so its sibling services (avatar overlay,
+    # Minecraft live view) stay bound to localhost only.
+    os.environ.setdefault("NOVA_BIND_HOST", "127.0.0.1")
+
     api = Api()
     html_path = STATIC_DIR / "index.html"
 

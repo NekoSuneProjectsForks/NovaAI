@@ -30,6 +30,9 @@ const CFG = {
   profilesFolder: getArg('profiles-folder', 'MC_PROFILES_FOLDER', path.join(__dirname, '..', '.minecraft-auth')),
   version: getArg('version', 'MC_VERSION', false), // false = auto-detect
   viewerPort: parseInt(getArg('viewer-port', 'MC_VIEWER_PORT', '8768'), 10),
+  // Bind the live-view site to all interfaces by default so it's reachable from
+  // the LAN, Tailscale, etc. Set MC_VIEWER_HOST=127.0.0.1 to keep it local-only.
+  viewerHost: getArg('viewer-host', 'MC_VIEWER_HOST', '0.0.0.0'),
   viewerFirstPerson:
     String(getArg('viewer-first-person', 'MC_VIEWER_FIRST_PERSON', 'false')).toLowerCase() === 'true',
   viewerVersion: String(getArg('viewer-version', 'MC_VIEWER_VERSION', '')).trim(),

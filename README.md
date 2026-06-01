@@ -34,7 +34,7 @@ Think Alexa, but with *attitude* and zero cloud lock-in. 🔥
 | ⏰ | **Reminders & Alarms** | Natural language: *"remind me to call mum at 3pm"* |
 | 📋 | **To-Do & Shopping** | Checkbox lists that sync across voice and GUI |
 | 📅 | **Calendar** | Track events with dates and times |
-| 👤 | **Profiles** | Multiple companion personalities — create, clone, switch |
+| 👤 | **Profiles** | Multiple companion personalities — create, clone, switch, import/export, delete |
 | ⚡ | **Auto-Tune** | Detects your hardware, adjusts models and GPU usage |
 | 🔄 | **Self-Update** | Checks GitHub for new versions on startup |
 | 🗄️ | **SQLite Storage** | Everything in one clean database — no scattered JSON |
@@ -83,6 +83,26 @@ python app.py --web          # 🌐 Same web UI, started directly (0.0.0.0:8800)
 
 ---
 
+## 🌐 Network Access (web mode)
+
+In **`--web`** mode NovaAI is meant to be reached from other devices, so the web UI **and** its sibling services bind to **all interfaces** — reachable over your LAN, **Tailscale**, a reverse proxy, or a Cloudflare tunnel:
+
+| Service | Port | Notes |
+|---------|------|-------|
+| 🖥️ Web dashboard | `8800` | `NOVA_WEB_HOST` / `NOVA_WEB_PORT` |
+| 🧍 Avatar overlay (HTTP + WebSocket) | `8766` / `8765` | for OBS / browser overlays |
+| 🎮 Minecraft Live View | `8768` | 3D world + inventory + thoughts |
+
+Just open the dashboard at e.g. `http://192.168.1.107:8800/` (or your Tailscale IP). When you open the **Avatar** window or **Live View**, NovaAI opens a **new browser tab on the same host you're using** (`192.168.1.107:8766`, `:8768`, …) — it never launches a browser on the Pi itself.
+
+- 🖥️ The **desktop GUI** (`--gui`) is a local app, so these services stay bound to **`127.0.0.1`** (localhost only).
+- 🔒 To restrict a service in web mode, set its host: `NOVA_BIND_HOST` (all services), or per-service `NOVA_AVATAR_HOST` / `MC_VIEWER_HOST` (e.g. `127.0.0.1`).
+- ☁️ **Cloudflare tunnel:** the tab uses whatever host you browsed from, with the service port appended — expose those ports on that hostname in your tunnel config.
+
+> ⚠️ These services have **no authentication**, so binding to all interfaces exposes them to everyone on your LAN / tailnet. That's usually fine on a trusted network; lock them down with the host overrides above if not.
+
+---
+
 ## 🖥️ The Desktop GUI
 
 NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** — a proper web-rendered UI that looks and feels modern, not some grey widget nightmare.
@@ -99,7 +119,7 @@ NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** �
 | 🧍 **Avatar** | Upload a VRM, open the OBS window, test emotions, toggle lip-sync |
 | 🎮 **Game** | Pick a driver (Minecraft/universal/etc.), set a goal, watch the live view |
 | 🎤 **Sing** | Type a song, attach/auto-find a backing track, replay saved songs |
-| 👤 **Profiles** | Create, clone, switch, or delete personalities |
+| 👤 **Profiles** | Create, clone, switch, delete, or import/export personalities |
 | ⚙️ **Settings** | Audio devices, web search, LLM/TTS/STT config |
 
 > 💡 **Pro tip:** Voice replies, hands-free mode, and mic mute can all be toggled *before* starting a session. Configure everything first, then hit Start.
@@ -234,6 +254,16 @@ Each companion profile is deeply customisable. Go wild:
 
 Want a sarcastic best friend? A patient tutor? A no-nonsense project manager? Just create a new profile and dial the sliders. 🎛️
 
+### 📤 Import / Export
+
+Move a profile between machines (e.g. your **PC → Raspberry Pi**) from the **Profiles** page:
+
+- **Export** — click **Export** on any profile to download a `*.nova-profile.json` file (saved to the device you're browsing from).
+- **Import** — click **Import**, pick a `*.nova-profile.json` file, and it's added as a **new** profile (importing never overwrites an existing one).
+- **Delete** — remove any non-active profile with **Delete** (you always keep at least one).
+
+> 💡 The export file carries the whole profile — identity, sliders, memory notes, voice, and all feature data — so the imported copy behaves exactly like the original.
+
 ---
 
 ## 🗄️ Data Storage
@@ -350,7 +380,17 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `MC_HOST` / `MC_PORT` | `127.0.0.1` / `25565` | Minecraft server address |
 | `MC_USERNAME` / `MC_AUTH` | `NovaAI` / `offline` | Bot name + `offline` or `microsoft` auth |
 | `MC_VIEWER_PORT` | `8768` | Live View dashboard port (3D + inventory) |
+| `MC_VIEWER_HOST` | *(follows mode)* | Live View bind host — all interfaces in web mode, `127.0.0.1` in GUI |
 | `VISION_MODEL` | *(none)* | Multimodal model for the universal driver |
+
+### 🌐 Networking
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `NOVA_WEB_HOST` / `NOVA_WEB_PORT` | `0.0.0.0` / `8800` | Web dashboard bind host + port |
+| `NOVA_BIND_HOST` | *(follows mode)* | Bind host for sibling services (avatar, Live View). Web mode → `0.0.0.0`, GUI → `127.0.0.1` |
+| `NOVA_AVATAR_HOST` | *(follows `NOVA_BIND_HOST`)* | Avatar HTTP/WebSocket bind host override |
+| `MC_VIEWER_HOST` | *(follows `NOVA_BIND_HOST`)* | Minecraft Live View bind host override |
 
 ### 🎤 Singing
 

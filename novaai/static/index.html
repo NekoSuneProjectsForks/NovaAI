@@ -490,7 +490,10 @@ tailwind.config = {
           <div class="flex gap-2">
             <input id="prof-name" type="text" placeholder="Profile name..." class="flex-1" />
             <button onclick="doCreateProfile()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Create</button>
+            <button onclick="doImportProfile()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold" title="Import a profile exported from another NovaAI (e.g. your PC)">Import</button>
           </div>
+          <input id="prof-import-file" type="file" accept=".json,application/json" class="hidden" onchange="onProfileFileChosen(event)" />
+          <div class="text-[11px] text-nova-muted mt-2">Export a profile below to move it between machines (e.g. your PC &rarr; Pi), then Import it here.</div>
         </div>
         <div class="card p-5 flex-1">
           <div class="text-[13px] font-bold mb-3">Profiles</div>
@@ -1017,6 +1020,17 @@ async function doSing() {
   try { const r = await api().sing(lyrics, ref); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
 }
 
+// ── Service URLs ───────────────────────────────────────────────────────────
+// Sibling services (avatar overlay :8766, Minecraft live view :8768) live on
+// their own ports. Build their URLs from THIS page's location so they match
+// however you reached NovaAI — LAN IP, Tailscale, or a Cloudflare tunnel host.
+// In the desktop GUI the page is file://, so fall back to the backend URL.
+function serviceUrl(port, path, fallbackUrl) {
+  if (!port || location.protocol === 'file:' || !location.hostname) return fallbackUrl || '';
+  const proto = location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${proto}//${location.hostname}:${port}${path || '/'}`;
+}
+
 // ── Avatar ─────────────────────────────────────────────────────────────────
 
 async function loadAvatar() {
@@ -1036,7 +1050,16 @@ async function doStartAvatar() {
 }
 async function doStopAvatar() { try { await api().stop_avatar(); loadAvatar(); } catch(e) { console.error(e); } }
 async function doOpenAvatarWindow() {
-  try { const r = await api().open_avatar_window(); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
+  try {
+    const r = await api().open_avatar_window();
+    if (r && !r.ok && r.msg) { showNotification(r.msg); return; }
+    // Web mode: open client-side so the URL matches this host. GUI mode: the
+    // backend already opened it on the local machine.
+    if (r && r.ok && location.protocol !== 'file:') {
+      const u = serviceUrl(r.port, r.path, r.url);
+      if (u) window.open(u, '_blank');
+    }
+  } catch(e) { console.error(e); }
 }
 async function doAvatarToggle(key, val) { try { await api().set_avatar_option(key, val); } catch(e) { console.error(e); } }
 async function doTestEmotion(em) { try { const r = await api().test_avatar_emotion(em); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
@@ -1162,7 +1185,18 @@ async function doStartGame() {
   try { const r = await api().start_game($('game-goal').value || '', driver); if (r && !r.ok && r.msg) showNotification(r.msg); loadGame(); } catch(e) { console.error(e); }
 }
 async function doStopGame() { try { await api().stop_game(); loadGame(); } catch(e) { console.error(e); } }
-async function doOpenGameView() { try { const r = await api().open_game_view(); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
+async function doOpenGameView() {
+  try {
+    const r = await api().open_game_view();
+    if (r && !r.ok && r.msg) { showNotification(r.msg); return; }
+    // Web mode: open client-side so the URL matches this host. GUI mode: the
+    // backend already opened it on the local machine.
+    if (r && r.ok && location.protocol !== 'file:') {
+      const u = serviceUrl(r.port, '/', r.url);
+      if (u) window.open(u, '_blank');
+    }
+  } catch(e) { console.error(e); }
+}
 async function doSetGameGoal() {
   try { const r = await api().set_game_goal($('game-goal').value || ''); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
 }
@@ -1413,6 +1447,7 @@ async function loadProfiles() {
         </div>
         <div class="flex gap-2">
           ${!active ? `<button onclick="doSwitchProfile('${p.profile_id}')" class="btn-primary px-3 py-1 rounded text-[11px]">Activate</button>` : ''}
+          <button onclick="doExportProfile('${p.profile_id}')" class="btn-secondary px-3 py-1 rounded text-[11px]">Export</button>
           <button onclick="doCloneProfile('${p.profile_id}','${escAttr(p.profile_name)}')" class="btn-secondary px-3 py-1 rounded text-[11px]">Clone</button>
           ${!active ? `<button onclick="doDeleteProfile('${p.profile_id}')" class="btn-danger px-3 py-1 rounded text-[11px]">Delete</button>` : ''}
         </div>
@@ -1437,6 +1472,42 @@ async function doCloneProfile(id, name) {
 async function doDeleteProfile(id) {
   if (!confirm('Delete this profile?')) return;
   try { await api().delete_profile_item(id); loadProfiles(); } catch(e) { console.error(e); }
+}
+
+async function doExportProfile(id) {
+  try {
+    const r = await api().export_profile(id);
+    if (!r || !r.ok) { showNotification((r && r.msg) || 'Export failed.'); return; }
+    // Download client-side so the file lands on the device you're browsing from.
+    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = r.filename || 'profile.nova-profile.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(e) { console.error(e); showNotification('Export failed.'); }
+}
+
+function doImportProfile() {
+  const inp = $('prof-import-file');
+  if (inp) { inp.value = ''; inp.click(); }
+}
+
+async function onProfileFileChosen(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    let data;
+    try { data = JSON.parse(text); } catch(_) { showNotification('That file is not valid JSON.'); return; }
+    const r = await api().import_profile(data, '');
+    if (!r || !r.ok) { showNotification((r && r.msg) || 'Import failed.'); return; }
+    showNotification('Imported profile: ' + (r.profile_name || r.profile_id));
+    loadProfiles();
+  } catch(e) { console.error(e); showNotification('Import failed.'); }
 }
 
 // ── Settings: audio ──────────────────────────────────────────────────────

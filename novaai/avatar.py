@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import socket
 import socketserver
 import threading
 from http import HTTPStatus
@@ -27,6 +29,19 @@ from .paths import AVATAR_UPLOADS_DIR, ROOT_DIR, STATIC_DIR
 
 # Generous cap for VRM uploads (they can be tens of MB).
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+
+def _local_ip() -> str:
+    """Best-effort LAN IP so we can show a reachable URL (no traffic sent)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "127.0.0.1"
 
 
 def _extract_boundary(content_type: str) -> str | None:
@@ -205,11 +220,21 @@ class AvatarBridge:
     def __init__(
         self,
         on_vrm_loaded: Callable[[Path], None],
-        http_host: str = "127.0.0.1",
+        http_host: str | None = None,
         http_port: int = 8766,
         ws_port: int = 8765,
     ) -> None:
         self.on_vrm_loaded = on_vrm_loaded
+        # Bind host follows the launch mode: web mode sets NOVA_BIND_HOST to
+        # 0.0.0.0 so the avatar HTTP page and WebSocket bridge are reachable from
+        # the LAN, Tailscale, Cloudflare, etc.; the desktop GUI sets it to
+        # 127.0.0.1 (local-only). NOVA_AVATAR_HOST overrides just this service.
+        if http_host is None:
+            http_host = (
+                os.getenv("NOVA_AVATAR_HOST")
+                or os.getenv("NOVA_BIND_HOST")
+                or "0.0.0.0"
+            )
         self.http_host = http_host
         self.http_port = http_port
         self.ws_port = ws_port
@@ -320,8 +345,14 @@ class AvatarBridge:
 
         asyncio.run_coroutine_threadsafe(send_all(), self.ws_loop)
 
+    def _advertised_host(self) -> str:
+        """A reachable host for URLs; 0.0.0.0/:: aren't connectable addresses."""
+        if self.http_host in {"0.0.0.0", "::", ""}:
+            return _local_ip()
+        return self.http_host
+
     def get_frontend_url(self) -> str:
-        return f"http://{self.http_host}:{self.http_port}/"
+        return f"http://{self._advertised_host()}:{self.http_port}/"
 
     def get_ws_url(self) -> str:
-        return f"ws://{self.http_host}:{self.ws_port}/"
+        return f"ws://{self._advertised_host()}:{self.ws_port}/"
