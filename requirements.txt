@@ -20,4 +20,4 @@ numpy>=1.24,<3
 
 # Lightweight, pure-Python WebSocket server used by the optional 3D avatar
 # bridge (and harmless to keep in the base set on all platforms).
-websockets>=11,<12
+websockets>=11,<15

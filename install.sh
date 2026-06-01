@@ -215,7 +215,9 @@ choose_install_profile() {
 # ── Step 1: Python ───────────────────────────────────────────────────────────
 
 ensure_python() {
-    step "1/7" "Checking for Python ${PYTHON_MIN}+..."
+    # Diagnostics go to stderr so the command name is the only thing on stdout
+    # (this function's stdout is captured via `python_cmd=$(ensure_python)`).
+    step "1/7" "Checking for Python ${PYTHON_MIN}+..." >&2
 
     local python_cmd=""
     for cmd in python3 python; do
@@ -224,21 +226,21 @@ ensure_python() {
             ver=$("$cmd" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
             if [[ -n "$ver" ]] && version_ge "$ver" "$PYTHON_MIN"; then
                 python_cmd="$cmd"
-                ok "Found $cmd $ver"
+                ok "Found $cmd $ver" >&2
                 echo "$python_cmd"
                 return
             fi
         fi
     done
 
-    fail "Python ${PYTHON_MIN}+ not found."
-    echo ""
-    info "Install Python ${PYTHON_MIN}+ using your package manager:"
-    info "  Ubuntu/Debian:  sudo apt install python3.11 python3.11-venv"
-    info "  Fedora:         sudo dnf install python3.11"
-    info "  Arch:           sudo pacman -S python"
-    info "  macOS:          brew install python@3.11"
-    echo ""
+    fail "Python ${PYTHON_MIN}+ not found." >&2
+    echo "" >&2
+    info "Install Python ${PYTHON_MIN}+ using your package manager:" >&2
+    info "  Ubuntu/Debian:  sudo apt install python3.11 python3.11-venv" >&2
+    info "  Fedora:         sudo dnf install python3.11" >&2
+    info "  Arch:           sudo pacman -S python" >&2
+    info "  macOS:          brew install python@3.11" >&2
+    echo "" >&2
     exit 1
 }
 

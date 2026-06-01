@@ -12,7 +12,13 @@ from urllib.parse import unquote
 
 try:
     import websockets
-    from websockets import WebSocketServerProtocol
+
+    try:
+        # Removed from the top-level namespace in websockets >= 14; used here
+        # only as a type annotation, so fall back to ``object`` when absent.
+        from websockets import WebSocketServerProtocol
+    except ImportError:  # pragma: no cover
+        WebSocketServerProtocol = object
 except ImportError:  # pragma: no cover
     websockets = None
     WebSocketServerProtocol = object
