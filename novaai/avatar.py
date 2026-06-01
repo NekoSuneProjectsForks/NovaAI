@@ -323,7 +323,31 @@ class AvatarBridge:
     def _handle_upload(self, path: Path) -> None:
         self.on_vrm_loaded(path)
 
+    @staticmethod
+    def _to_servable_url(url: str) -> str:
+        """Turn any stored VRM reference into a URL the browser can fetch.
+
+        VRMs live in this install's uploads dir (``data/avatars``) and are served
+        at ``/uploads/<name>``. A profile may instead carry an absolute path from
+        another machine (e.g. an imported profile with a Windows path like
+        ``D:\\DEV\\NovaAI\\data\\avatars\\model.vrm``) — the browser can't fetch
+        that. Reduce anything that isn't already a web/relative URL to its
+        filename and serve it from wherever NovaAI is actually running.
+        """
+        if not url:
+            return url
+        u = str(url).strip()
+        if u.startswith(("http://", "https://", "/uploads/", "data:", "blob:")):
+            return u
+        # ntpath.basename splits on BOTH "/" and "\\", so it handles Windows
+        # paths even when NovaAI runs on Linux/macOS.
+        import ntpath
+
+        base = ntpath.basename(u)
+        return f"/uploads/{base}" if base else u
+
     def publish_avatar(self, url: str) -> None:
+        url = self._to_servable_url(url)
         self.current_avatar_url = url
         self._broadcast({"type": "avatar", "event": "load", "url": url})
 

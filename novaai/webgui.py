@@ -1769,6 +1769,16 @@ class Api:
             src = data.get("profile") if isinstance(data.get("profile"), dict) else data
             if not isinstance(src, dict) or not src:
                 return {"ok": False, "msg": "Invalid profile file."}
+            # A profile from another machine can carry an absolute VRM path that
+            # is meaningless here. Reduce it to a filename served from this
+            # install's uploads dir, and drop the machine-specific absolute path.
+            details = src.get("profile_details")
+            if isinstance(details, dict) and isinstance(details.get("avatar"), dict):
+                av = details["avatar"]
+                last = av.get("last_loaded_vrm_path")
+                if isinstance(last, str) and last:
+                    av["last_loaded_vrm_path"] = AvatarBridge._to_servable_url(last)
+                av.pop("vrm_path", None)
             profile_name = (
                 str(name).strip()
                 or str(src.get("profile_name", "")).strip()
