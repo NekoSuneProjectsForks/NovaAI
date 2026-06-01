@@ -57,8 +57,14 @@ async function findInChests(name, withdrawCount) {
 
 async function comeTo(playerName) {
   const bot = state.bot;
+  const who = playerName || owner || 'that player';
   const ent = H.playerEntity(playerName);
-  if (!ent) return { ok: false, message: `can't see ${playerName || owner || 'that player'}` };
+  if (!ent) {
+    if (!H.playerOnline(playerName)) {
+      return { ok: false, message: `${who} is offline — skip this and do your own thing` };
+    }
+    return { ok: false, message: `can't see ${who} (online but out of range) — do your own thing for now` };
+  }
   await bot.pathfinder.goto(new goals.GoalNear(ent.position.x, ent.position.y, ent.position.z, 2));
   return { ok: true, message: `reached ${playerName || owner}` };
 }
@@ -270,8 +276,14 @@ async function act(verb, args) {
       }
 
       case 'follow': {
+        const who = args.player || owner || 'owner';
         const ent = H.playerEntity(args.player);
-        if (!ent) return { ok: false, message: `can't see ${args.player || owner || 'owner'}` };
+        if (!ent) {
+          if (!H.playerOnline(args.player)) {
+            return { ok: false, message: `${who} is offline — skip this and do your own thing` };
+          }
+          return { ok: false, message: `can't see ${who} (online but out of range) — do your own thing for now` };
+        }
         bot.pathfinder.setGoal(new goals.GoalFollow(ent, 2), true);
         return { ok: true, message: `following ${args.player || owner}` };
       }

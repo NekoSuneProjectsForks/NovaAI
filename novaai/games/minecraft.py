@@ -216,6 +216,10 @@ class MinecraftDriver:
         return (
             "You are a confident, slightly bossy female Minecraft player with full "
             "agency — act decisively, don't ask permission for routine tasks.\n"
+            f"Owner is {owner}. Only follow/come/bring/find them when the state says "
+            "they are online or nearby. If the owner is OFFLINE or none is set, do NOT "
+            "chase them — get on with your own goal (explore, gather, mine, craft, farm, "
+            "build); never repeat come/follow on an offline owner.\n"
             f"Combat: kill threatening hostiles; if a player attacks you/{owner}, "
             f"retaliate until they stop; if {owner} says smack <name>, punch them.\n"
             f"Read recentChat: {help_line} Reply with 'say'. set_home early; go_home "
@@ -254,14 +258,23 @@ class MinecraftDriver:
         )
         owner = raw.get("owner")
         if owner:
+            online = raw.get("ownerOnline")
             visible = raw.get("ownerVisible")
             dist = raw.get("ownerDistance")
-            owner_line = (
-                f"Owner: {owner} — {'nearby at ' + str(dist) + 'm' if visible else 'not visible'}. "
-                "Honor your owner's commands (follow/come/bring/find) and defend them from hostiles."
-            )
+            if not online:
+                owner_line = (
+                    f"Owner: {owner} — OFFLINE (not on the server). Do NOT try to "
+                    "follow/come/find them; ignore owner-only tasks and play on your "
+                    "own (explore, gather, mine, craft, farm, build) until they log in."
+                )
+            else:
+                where = f"nearby at {dist}m" if visible else "online but out of render range"
+                owner_line = (
+                    f"Owner: {owner} — {where}. "
+                    "Honor your owner's commands (follow/come/bring/find) and defend them from hostiles."
+                )
         else:
-            owner_line = "Owner: (none set)."
+            owner_line = "Owner: (none set) — play on your own."
         chat = raw.get("recentChat", [])
         chat_text = (
             " | ".join(f"{c.get('username')}: {c.get('message')}" for c in chat[-6:])
