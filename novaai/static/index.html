@@ -289,6 +289,28 @@ tailwind.config = {
 
         <div class="card p-5">
           <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Alerts &amp; Tips (Stockings)</div>
+            <button onclick="loadEarnings()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
+          </div>
+          <div id="earnings-box" class="text-[12px] text-nova-muted mb-3">Loading…</div>
+          <div class="text-[11px] text-nova-muted mb-1">Test reactions (fires expression + cute message):</div>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <button onclick="doSimAlert('donation', 5)" class="btn-secondary px-3 py-1 rounded text-[11px]">Donation $5</button>
+            <button onclick="doSimAlert('follow')" class="btn-secondary px-3 py-1 rounded text-[11px]">Follow</button>
+            <button onclick="doSimAlert('subscription')" class="btn-secondary px-3 py-1 rounded text-[11px]">Sub</button>
+            <button onclick="doSimAlert('resub', 0, 6)" class="btn-secondary px-3 py-1 rounded text-[11px]">Resub x6</button>
+            <button onclick="doSimAlert('cheer', 100)" class="btn-secondary px-3 py-1 rounded text-[11px]">100 bits</button>
+            <button onclick="doSimAlert('raid')" class="btn-secondary px-3 py-1 rounded text-[11px]">Raid</button>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="openEarningsOverlay()" class="btn-primary px-3 py-1 rounded text-[11px]">Open Tips Overlay</button>
+            <button onclick="doResetEarnings()" class="btn-danger px-3 py-1 rounded text-[11px]">Reset Tips</button>
+          </div>
+          <div class="text-[11px] text-nova-muted mt-2">Connect Streamlabs/StreamElements/Twitch or POST events to <code>/webhook/stream</code> from any bot (Tangia, sound alerts, …).</div>
+        </div>
+
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
             <div class="text-[13px] font-bold">Memory (what NovaAI is learning)</div>
             <button onclick="loadMemories()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
           </div>
@@ -975,7 +997,42 @@ async function loadStream() {
     $('stream-mode').textContent = s.reply_mode + (s.authenticated ? ' · can post' : ' · read-only');
   } catch(e) { console.error(e); }
   loadMemories();
+  loadEarnings();
 }
+
+// ── Alerts & tips ("stockings") ────────────────────────────────────────────
+const CUR_SYM = { USD:'$', GBP:'£', EUR:'€', CAD:'$', AUD:'$', JPY:'¥' };
+function fmtMoney(n, cur) {
+  const s = CUR_SYM[(cur||'USD').toUpperCase()] || '';
+  const v = Math.round((n||0)*100)/100;
+  return s + (v === Math.floor(v) ? v.toFixed(0) : v.toFixed(2));
+}
+async function loadEarnings() {
+  try {
+    const e = await api().get_earnings();
+    const box = $('earnings-box');
+    if (!box) return;
+    const last = e.last && e.last.user ? ` · last: ${escHtml(e.last.user)} (${fmtMoney(e.last.amount, e.currency)})` : '';
+    box.innerHTML = `<span class="text-nova-text font-semibold">All-time ${fmtMoney(e.all_time, e.currency)}</span> · today ${fmtMoney(e.today, e.currency)} · session ${fmtMoney(e.session, e.currency)} · ${e.count||0} tips${last}`;
+  } catch(e) { console.error(e); }
+}
+async function doSimAlert(type, amount, months) {
+  try { await api().simulate_stream_event(type, 'TestViewer', amount||0, months||0); setTimeout(loadEarnings, 300); }
+  catch(e) { console.error(e); }
+}
+async function doResetEarnings() {
+  if (!confirm('Reset the tips total?')) return;
+  try { await api().reset_earnings('all'); loadEarnings(); } catch(e) { console.error(e); }
+}
+function openEarningsOverlay() {
+  // Served by the web server at the same origin (use this URL as an OBS source).
+  if (location.protocol === 'file:') {
+    showNotification('Open the tips overlay from web mode (python app.py --web): http://<host>:8800/overlay/earnings');
+    return;
+  }
+  window.open('/overlay/earnings', '_blank');
+}
+window.__onEarnings = loadEarnings;
 
 async function doStartStream() {
   try { const r = await api().start_stream(); if (r && !r.ok) showNotification(r.msg); loadStream(); } catch(e) { console.error(e); }

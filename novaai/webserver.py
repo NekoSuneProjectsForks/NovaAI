@@ -30,7 +30,7 @@ import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import webgui
 from .paths import AVATAR_UPLOADS_DIR, STATIC_DIR
@@ -152,6 +152,9 @@ class NovaWebHandler(BaseHTTPRequestHandler):
             name = Path(path[len("/uploads/"):]).name  # strip traversal
             self._serve_file(AVATAR_UPLOADS_DIR / name)
             return
+        if path in {"/overlay/earnings", "/earnings"}:
+            self._serve_file(STATIC_DIR / "earnings.html")
+            return
         # Anything else: serve from the static dir (logo, avatar.html, etc.).
         target = (STATIC_DIR / path.lstrip("/")).resolve()
         if STATIC_DIR.resolve() in target.parents or target == STATIC_DIR.resolve():
@@ -208,6 +211,39 @@ class NovaWebHandler(BaseHTTPRequestHandler):
         finally:
             self.clients.unregister(q)
 
+    def _handle_stream_webhook(self) -> None:
+        """Ingress for stream alert events from any source.
+
+        POST /webhook/stream?source=streamlabs|streamelements|twitch|webhook
+        Body is the platform's JSON payload (or a simple {type,user,amount,...}
+        for the generic webhook). Lets Twitch EventSub forwarders, Tangia,
+        sound-alert tools, or any bot drive NovaAI's reactions + earnings.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        body = self.rfile.read(length) if length > 0 else b""
+        # Optional shared-secret check so randoms can't spoof alerts.
+        secret = os.getenv("NOVA_WEBHOOK_SECRET", "")
+        if secret:
+            provided = self.headers.get("X-Nova-Secret", "")
+            qs = parse_qs(urlsplit(self.path).query)
+            if provided != secret and (qs.get("secret", [""])[0] != secret):
+                self._send_json({"error": "Forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+        try:
+            payload = json.loads(body or b"{}")
+        except Exception:
+            self._send_json({"error": "Invalid JSON"}, HTTPStatus.BAD_REQUEST)
+            return
+        source = parse_qs(urlsplit(self.path).query).get("source", ["webhook"])[0]
+        try:
+            result = self.api.ingest_stream_event(payload, source)
+            self._send_json(result)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def _serve_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -225,7 +261,11 @@ class NovaWebHandler(BaseHTTPRequestHandler):
 
     # ── POST ─────────────────────────────────────────────────────────────────
     def do_POST(self) -> None:
-        if self.path.split("?", 1)[0] != "/api/call":
+        raw_path = self.path.split("?", 1)[0]
+        if raw_path == "/webhook/stream":
+            self._handle_stream_webhook()
+            return
+        if raw_path != "/api/call":
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
 

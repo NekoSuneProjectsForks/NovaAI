@@ -135,8 +135,24 @@ NovaAI can do far more than chat — it can stream, learn, embody a 3D avatar, p
 Reads your channel's chat and replies **in-character**, just like Neuro-sama. Works anonymously (read-only) or, with a bot token, posts replies straight back into chat.
 
 - Reply policy: **mention** (answer when named), **command** (only `!ask ...`), or **all** (answer everything) — with a cooldown so it never spams or swamps the GPU
+- **Who can talk to NovaAI**: `everyone`, `subscribers` (subs/VIPs/mods/broadcaster), or `moderators` (mods/broadcaster) — all chat still shows in the feed
 - Live chat feed + connection status on the **Stream** page; replies also speak aloud (OBS-capturable) and lip-sync the avatar
 - Set it up with `TWITCH_ENABLED`, `TWITCH_CHANNEL`, and (optional) `TWITCH_BOT_USERNAME` + `TWITCH_OAUTH_TOKEN`
+
+### 🎉 Stream Alerts & Tips ("Stockings")
+
+NovaAI reacts to **donations, follows, subs, resubs, gift subs, cheers, raids, and hosts** with an avatar expression + a cute, **profile-flavored** spoken message — then tallies the money on a tips overlay.
+
+- **Sources**: Streamlabs & StreamElements (set `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN` and `pip install -r requirements-streaming.txt`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
+  ```bash
+  curl -X POST "http://<host>:8800/webhook/stream?source=webhook" \
+       -H "Content-Type: application/json" \
+       -d '{"type":"donation","user":"Alice","amount":5,"currency":"USD"}'
+  ```
+  (Set `NOVA_WEBHOOK_SECRET` to require an `X-Nova-Secret` header / `?secret=`.)
+- **Reactions** are editable per profile (`profile_details.alerts`): a cute message + expression per event type. Placeholders: `{user} {amount} {currency} {months} {tier} {viewers} {message}`.
+- **Tips overlay** ("stockings"): an OBS-ready transparent page at **`/overlay/earnings`** showing all-time / today / session totals (try `?show=today`, `?title=Goal&goal=500`). Bits convert at 100 = ~$1.
+- **Test** any reaction without a live event from the **Stream** page buttons.
 
 ### 🧬 Memory / Learning (RAG)
 
@@ -364,6 +380,14 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `TWITCH_REPLY_MODE` | `mention` | `mention`, `command` (`!ask`), or `all` |
 | `TWITCH_ALLOWED_ROLES` | `everyone` | Who NovaAI replies to: `everyone`, `subscribers` (subs/VIPs/mods/broadcaster), or `moderators` (mods/broadcaster). All chat still shows in the feed. |
 | `TWITCH_REPLY_COOLDOWN` | `8` | Seconds between replies |
+
+### 🎉 Stream Alerts
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `STREAMLABS_SOCKET_TOKEN` | *(none)* | Streamlabs socket API token for live alerts (needs `requirements-streaming.txt`) |
+| `STREAMELEMENTS_JWT_TOKEN` | *(none)* | StreamElements JWT for live alerts (needs `requirements-streaming.txt`) |
+| `NOVA_WEBHOOK_SECRET` | *(none)* | If set, `/webhook/stream` requires `X-Nova-Secret` header or `?secret=` |
 
 ### 🧬 RAG Memory
 

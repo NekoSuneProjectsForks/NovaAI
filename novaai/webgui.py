@@ -33,6 +33,7 @@ from .config import Config
 from .engine import GenerationRequest, generate_reply
 from .memory import MemoryStore
 from .twitch import TwitchClient
+from . import stream_events
 from .features import (
     handle_feature_request,
     check_due_reminders,
@@ -285,6 +286,8 @@ class Api:
         self._stream_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._stream_responder_thread: threading.Thread | None = None
         self._last_stream_reply = 0.0
+        self.alert_sources: list = []          # Streamlabs / StreamElements clients
+        self._session_earnings = 0.0
         # Avatar
         self.avatar: AvatarBridge | None = None
         self._last_amplitude_emit = 0.0
@@ -769,11 +772,41 @@ class Api:
                     target=self._stream_responder, daemon=True, name="NovaAIStreamResponder"
                 )
                 self._stream_responder_thread.start()
+            self._start_alert_sources()
             self._push_state()
             return {"ok": True, "msg": f"Connecting to #{self.config.twitch_channel}..."}
         except Exception as exc:
             self.stream_started = False
             return {"ok": False, "msg": str(exc)}
+
+    def _start_alert_sources(self) -> None:
+        """Connect Streamlabs / StreamElements if tokens are configured."""
+        from . import stream_sources
+
+        self._stop_alert_sources()
+        cfg = self.config
+        on_status = lambda msg: self._push_chat("Alerts", msg, "system")
+        specs = [
+            (stream_sources.StreamlabsSource, getattr(cfg, "streamlabs_socket_token", None)),
+            (stream_sources.StreamElementsSource, getattr(cfg, "streamelements_jwt_token", None)),
+        ]
+        for cls, token in specs:
+            if not token:
+                continue
+            try:
+                src = cls(token, self.handle_stream_event, on_status)
+                if src.start():
+                    self.alert_sources.append(src)
+            except Exception as exc:
+                on_status(f"{cls.name}: failed to start ({exc}).")
+
+    def _stop_alert_sources(self) -> None:
+        for src in self.alert_sources:
+            try:
+                src.stop()
+            except Exception:
+                pass
+        self.alert_sources = []
 
     def stop_stream(self) -> dict[str, Any]:
         self.stream_started = False
@@ -783,6 +816,7 @@ class Api:
             except Exception:
                 pass
         self.twitch = None
+        self._stop_alert_sources()
         self._push_state()
         return {"ok": True, "msg": "Stream disconnected."}
 
@@ -1039,6 +1073,146 @@ class Api:
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
+
+    # ── stream alerts (donations / follows / subs / raids …) ──────────────────────
+
+    def _alerts_block(self) -> dict[str, Any]:
+        details = self.profile.get("profile_details") if self.profile else None
+        if isinstance(details, dict) and isinstance(details.get("alerts"), dict):
+            return details["alerts"]
+        return {}
+
+    def handle_stream_event(self, event: "stream_events.StreamEvent") -> None:
+        """React to one normalized stream event: expression + cute message + tally.
+
+        Called from the webhook/socket source threads, so it never raises.
+        """
+        try:
+            block = self._alerts_block()
+            if block and not block.get("enabled", True):
+                return
+            expr = event.expression(block.get("expressions") if block else None)
+            message = stream_events.build_message(event, block.get("messages") if block else None)
+
+            # Earnings ("stockings") tally for money events. Cheer amounts are
+            # bits, and Twitch pays ~$1 per 100 bits, so convert to dollars.
+            if event.type in stream_events.EARNING_EVENTS and event.amount > 0:
+                money = event.amount / 100.0 if event.type == "cheer" else event.amount
+                self._add_earnings(round(money, 2), event.currency, event.user, event.type)
+
+            # Show it in the chat + stream feeds.
+            label = event.type.capitalize()
+            self._push_chat("Alert", f"[{label}] {event.user}", "system")
+            companion = self.profile.get("companion_name", "NovaAI") if self.profile else "NovaAI"
+            self._push_chat(companion, message, "assistant")
+
+            # Drive the avatar expression even when speech is off.
+            if self.avatar is not None:
+                try:
+                    self.avatar.publish_state({"emotion": expr, "danger": False})
+                except Exception:
+                    pass
+
+            if (not block or block.get("speak", True)) and getattr(self.state, "voice_enabled", True):
+                self._speak(message, expr)
+        except Exception:
+            pass
+
+    def ingest_stream_event(self, payload: dict[str, Any], source: str = "webhook") -> dict[str, Any]:
+        """Entry point for the /webhook/stream endpoint and external sources."""
+        src = (source or "webhook").lower()
+        events: list = []
+        try:
+            if src == "streamlabs":
+                events = stream_events.from_streamlabs(payload)
+            elif src in {"streamelements", "se"}:
+                ev = stream_events.from_streamelements(payload)
+                events = [ev] if ev else []
+            elif src in {"twitch", "eventsub"}:
+                ev = stream_events.from_twitch_eventsub(payload)
+                events = [ev] if ev else []
+            else:
+                ev = stream_events.from_generic(payload)
+                events = [ev] if ev else []
+        except Exception:
+            events = []
+        if not events:
+            return {"ok": False, "msg": "No recognizable event in payload."}
+        for ev in events:
+            self.handle_stream_event(ev)
+        return {"ok": True, "count": len(events)}
+
+    def simulate_stream_event(
+        self, etype: str, user: str = "TestUser", amount: float = 0.0, months: int = 0
+    ) -> dict[str, Any]:
+        """Fire a fake event from the dashboard so reactions can be tested."""
+        ev = stream_events.from_generic(
+            {"type": etype, "user": user, "amount": amount, "months": months, "source": "manual"}
+        )
+        if not ev:
+            return {"ok": False, "msg": f"Unknown event type: {etype}"}
+        self.handle_stream_event(ev)
+        return {"ok": True}
+
+    # ── earnings ("stockings") tracker ────────────────────────────────────────────
+
+    def _earnings_store(self) -> dict[str, Any]:
+        from . import database
+        try:
+            return json.loads(database.get_state("earnings", "{}") or "{}")
+        except Exception:
+            return {}
+
+    def _save_earnings_store(self, data: dict[str, Any]) -> None:
+        from . import database
+        try:
+            database.set_state("earnings", json.dumps(data))
+        except Exception:
+            pass
+
+    def _add_earnings(self, amount: float, currency: str, user: str, etype: str) -> None:
+        from datetime import datetime
+        data = self._earnings_store()
+        today = datetime.now().strftime("%Y-%m-%d")
+        if data.get("today_date") != today:
+            data["today_date"] = today
+            data["today"] = 0.0
+        data["all_time"] = round(float(data.get("all_time", 0.0)) + amount, 2)
+        data["today"] = round(float(data.get("today", 0.0)) + amount, 2)
+        data["count"] = int(data.get("count", 0)) + 1
+        data["currency"] = currency or data.get("currency", "USD")
+        data["last"] = {"user": user, "amount": amount, "type": etype}
+        # In-memory session total (resets when the app restarts).
+        self._session_earnings = round(getattr(self, "_session_earnings", 0.0) + amount, 2)
+        self._save_earnings_store(data)
+        # Nudge any open overlay to refresh promptly.
+        try:
+            self._js("window.__onEarnings && window.__onEarnings()")
+        except Exception:
+            pass
+
+    def get_earnings(self) -> dict[str, Any]:
+        data = self._earnings_store()
+        return {
+            "all_time": round(float(data.get("all_time", 0.0)), 2),
+            "today": round(float(data.get("today", 0.0)), 2),
+            "session": round(getattr(self, "_session_earnings", 0.0), 2),
+            "count": int(data.get("count", 0)),
+            "currency": data.get("currency", "USD"),
+            "last": data.get("last", {}),
+        }
+
+    def reset_earnings(self, scope: str = "all") -> dict[str, Any]:
+        data = self._earnings_store()
+        if scope == "today":
+            data["today"] = 0.0
+        elif scope == "session":
+            self._session_earnings = 0.0
+        else:
+            data = {}
+            self._session_earnings = 0.0
+        self._save_earnings_store(data)
+        return {"ok": True, **self.get_earnings()}
 
     # ── game agent ────────────────────────────────────────────────────────────
 

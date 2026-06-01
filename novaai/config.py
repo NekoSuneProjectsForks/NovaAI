@@ -331,6 +331,8 @@ class Config:
     twitch_reply_mode: str
     twitch_allowed_roles: str
     twitch_reply_cooldown_seconds: float
+    streamlabs_socket_token: str | None
+    streamelements_jwt_token: str | None
     # RAG memory
     rag_enabled: bool
     rag_embedding_provider: str
@@ -658,6 +660,8 @@ class Config:
             twitch_reply_cooldown_seconds=max(
                 0.0, float(os.getenv("TWITCH_REPLY_COOLDOWN", "8"))
             ),
+            streamlabs_socket_token=parse_optional_str_env("STREAMLABS_SOCKET_TOKEN"),
+            streamelements_jwt_token=parse_optional_str_env("STREAMELEMENTS_JWT_TOKEN"),
             rag_enabled=parse_bool_env("RAG_ENABLED", True),
             rag_embedding_provider=normalize_rag_embedding_provider(
                 os.getenv("RAG_EMBEDDING_PROVIDER", "local")
