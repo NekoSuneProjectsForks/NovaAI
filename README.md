@@ -151,7 +151,9 @@ NovaAI **remembers across sessions** using retrieval-augmented memory — not fi
 A real 3D avatar (three-vrm) that **lip-syncs to the voice**, changes expression with the mood, breathes/blinks on idle, and even dances.
 
 - Upload any **`.vrm`** model from the **Avatar** page
-- Drives expressions (happy/sad/angry/relaxed) + visemes from live TTS amplitude
+- **20+ expressions** with matching body language — happy, excited, laugh, proud, smug, **blush, shy, love, flirty, wink**, sad, cry, pout, angry, anxious, scared, surprised, shocked, confused, relaxed, calm, sleepy — plus visemes driven from live TTS amplitude
+- Custom expressions like **blush / wink / love** use the model's own blendshapes when present, and gracefully fall back to a matching preset + pose otherwise
+- Expressions are auto-picked from the mood of each reply, or test them from the **Avatar** page buttons
 - **OBS-ready**: open the transparent browser window as a Browser Source for streaming
 - Shared lip-sync seam means chat, Twitch replies, game narration, and singing **all** animate it
 

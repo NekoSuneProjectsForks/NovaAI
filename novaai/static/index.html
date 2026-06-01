@@ -333,15 +333,12 @@ tailwind.config = {
 
         <div class="card p-5">
           <div class="text-[13px] font-bold mb-3">Test Expressions &amp; Motion</div>
+          <div id="emotion-buttons" class="flex flex-wrap gap-2 mb-3"></div>
           <div class="flex flex-wrap gap-2">
-            <button onclick="doTestEmotion('happy')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Happy</button>
-            <button onclick="doTestEmotion('sad')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Sad</button>
-            <button onclick="doTestEmotion('angry')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Angry</button>
-            <button onclick="doTestEmotion('anxious')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Anxious</button>
-            <button onclick="doTestEmotion('neutral')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Neutral</button>
             <button onclick="doDance(true)" class="btn-primary px-3 py-1.5 rounded text-[12px]">Dance</button>
             <button onclick="doDance(false)" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Stop Dance</button>
           </div>
+          <div class="text-[11px] text-nova-muted mt-2">Blush, shy, love, wink &amp; flirty need a VRM with those blendshapes — otherwise they fall back to a matching expression + pose.</div>
         </div>
       </div>
 
@@ -1033,8 +1030,26 @@ function serviceUrl(port, path, fallbackUrl) {
 
 // ── Avatar ─────────────────────────────────────────────────────────────────
 
+// Expression test buttons — must mirror EMOTION_MAP in static/avatar.html.
+const AVATAR_EMOTIONS = [
+  'neutral', 'happy', 'excited', 'laugh', 'proud', 'smug',
+  'blush', 'shy', 'love', 'flirty', 'wink',
+  'sad', 'cry', 'pout', 'angry', 'anxious', 'scared',
+  'surprised', 'shocked', 'confused', 'relaxed', 'calm', 'sleepy',
+];
+
+function renderEmotionButtons() {
+  const wrap = $('emotion-buttons');
+  if (!wrap || wrap.childElementCount) return;   // build once
+  wrap.innerHTML = AVATAR_EMOTIONS.map((em) => {
+    const label = em.charAt(0).toUpperCase() + em.slice(1);
+    return `<button onclick="doTestEmotion('${em}')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">${label}</button>`;
+  }).join('');
+}
+
 async function loadAvatar() {
   try {
+    renderEmotionButtons();
     const s = await api().get_avatar_status();
     const badge = $('avatar-badge');
     badge.textContent = s.running ? 'Running' : (s.enabled ? 'Enabled' : 'Off');

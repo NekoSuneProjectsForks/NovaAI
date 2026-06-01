@@ -273,26 +273,95 @@
   }
 
   // three-vrm v3 uses vrm.expressionManager with lowercase preset names
-  // (happy/angry/sad/relaxed/neutral). It also normalizes legacy VRM 0.x
-  // blendshapes (Joy/Angry/Sorrow/Fun) onto the same names.
-  const EMOTION_PRESETS = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+  // (happy/angry/sad/relaxed/surprised/neutral). It also normalizes legacy
+  // VRM 0.x blendshapes (Joy/Angry/Sorrow/Fun) onto the same names.
+  const VRM_PRESETS = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+  // Channels the render loop drives every frame (lip-sync, blink, eye-look) —
+  // never reset/override these from applyExpression().
+  const RESERVED_EXPR = new Set([
+    'aa', 'ih', 'ou', 'ee', 'oh', 'blink', 'blinkleft', 'blinkright',
+    'lookup', 'lookdown', 'lookleft', 'lookright',
+  ]);
+
+  // Rich emotion set. Each maps to a base VRM preset + weight, optional extra
+  // preset blends, and optional CUSTOM blendshape names to try (model-specific,
+  // e.g. blush / wink / love that many anime VRMs ship). Names the model lacks
+  // are skipped, so every emotion still reads through its base preset + the
+  // body-language pose below.
+  const EMOTION_MAP = {
+    neutral:   { base: ['neutral', 1] },
+    happy:     { base: ['happy', 1] },
+    joy:       { base: ['happy', 1] },
+    excited:   { base: ['happy', 1], blend: [['surprised', 0.35]] },
+    laugh:     { base: ['happy', 1] },
+    proud:     { base: ['happy', 0.7] },
+    smug:      { base: ['happy', 0.45], custom: ['smug', 'Smug', 'grin'] },
+    blush:     { base: ['happy', 0.45], custom: ['blush', 'Blush', 'shy', 'Shy', 'embarrassed', 'Embarrassed'] },
+    shy:       { base: ['happy', 0.3],  custom: ['blush', 'Blush', 'shy', 'Shy'] },
+    love:      { base: ['happy', 0.8],  custom: ['love', 'Love', 'heart', 'Heart', 'blush', 'Blush'] },
+    flirty:    { base: ['happy', 0.5],  custom: ['wink', 'Wink', 'blush', 'Blush'] },
+    wink:      { base: ['happy', 0.6],  custom: ['wink', 'Wink', 'blinkLeft', 'blinkRight'] },
+    sad:       { base: ['sad', 1] },
+    cry:       { base: ['sad', 1],      custom: ['cry', 'Cry', 'sad'] },
+    pout:      { base: ['angry', 0.4],  custom: ['blush', 'Blush'] },
+    angry:     { base: ['angry', 1] },
+    anxious:   { base: ['sad', 0.5],    blend: [['surprised', 0.2]] },
+    scared:    { base: ['surprised', 0.7], blend: [['sad', 0.4]] },
+    surprised: { base: ['surprised', 1] },
+    shocked:   { base: ['surprised', 1] },
+    confused:  { base: ['sad', 0.3],    blend: [['surprised', 0.3]] },
+    relaxed:   { base: ['relaxed', 1] },
+    calm:      { base: ['relaxed', 0.7] },
+    sleepy:    { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
+    fun:       { base: ['relaxed', 1] },
+  };
+
+  // Cache the lowercase set of expression names a model actually exposes so we
+  // only apply custom blendshapes (blush/wink/…) the VRM truly has.
+  function availableExpressionNames(em) {
+    if (em.__novaNames) return em.__novaNames;
+    const set = new Set();
+    try {
+      if (Array.isArray(em.expressions)) {
+        em.expressions.forEach((e) => {
+          if (e && e.expressionName) set.add(String(e.expressionName).toLowerCase());
+        });
+      }
+      if (em.expressionMap) {
+        Object.keys(em.expressionMap).forEach((k) => set.add(String(k).toLowerCase()));
+      }
+    } catch (e) { /* older API */ }
+    em.__novaNames = set;
+    return set;
+  }
 
   function applyExpression(expression) {
     currentEmotion = String(expression || 'neutral').toLowerCase();
     if (!currentVrm || !currentVrm.expressionManager) return;
     const em = currentVrm.expressionManager;
-    EMOTION_PRESETS.forEach((preset) => {
-      try { em.setValue(preset, 0); } catch (error) { /* missing preset */ }
+    const names = availableExpressionNames(em);
+
+    // Reset every channel we might have driven (presets + any known custom),
+    // leaving lip-sync/blink/eye-look to the render loop.
+    const toReset = new Set(VRM_PRESETS);
+    Object.values(EMOTION_MAP).forEach((d) => (d.custom || []).forEach((c) => toReset.add(c)));
+    toReset.forEach((name) => {
+      if (RESERVED_EXPR.has(name.toLowerCase())) return;
+      try { em.setValue(name, 0); } catch (e) { /* not on this model */ }
     });
-    const preset = {
-      happy: 'happy', joy: 'happy',
-      sad: 'sad', sorrow: 'sad',
-      angry: 'angry',
-      anxious: 'relaxed', fun: 'relaxed', relaxed: 'relaxed',
-      surprised: 'surprised',
-      neutral: 'neutral',
-    }[currentEmotion] || 'neutral';
-    try { em.setValue(preset, 1); } catch (error) { /* unsupported */ }
+
+    const def = EMOTION_MAP[currentEmotion] || EMOTION_MAP.neutral;
+    const setIf = (name, w) => {
+      if (!name || RESERVED_EXPR.has(name.toLowerCase())) return false;
+      try { em.setValue(name, w); return true; } catch (e) { return false; }
+    };
+    setIf(def.base[0], def.base[1]);                       // base preset
+    (def.blend || []).forEach(([n, w]) => setIf(n, w));    // extra preset blends
+    if (def.custom) {                                      // first custom the model has
+      for (const c of def.custom) {
+        if (names.has(c.toLowerCase()) && setIf(c, 1)) break;
+      }
+    }
   }
 
   // ── Posing: break the default T-pose and add emotion body language ──────────
@@ -308,11 +377,28 @@
   const EMOTION_POSE = {
     happy:     { head: { x: -0.05, z: 0.08 }, chest: { x: -0.04 } },
     joy:       { head: { x: -0.05, z: 0.08 }, chest: { x: -0.04 } },
+    excited:   { spine: { x: -0.06 }, head: { x: -0.10 }, chest: { x: -0.07 } },
+    laugh:     { head: { x: -0.12, z: 0.06 }, chest: { x: -0.06 } },
+    proud:     { spine: { x: -0.05 }, chest: { x: -0.07 }, head: { x: -0.06 } },
+    smug:      { head: { x: -0.06, y: 0.10 }, chest: { x: -0.03 } },
+    blush:     { head: { x: 0.12, y: 0.10, z: 0.05 }, chest: { x: 0.03 } },
+    shy:       { head: { x: 0.16, y: 0.12, z: 0.06 }, leftUpperArm: { z: 0.10 }, rightUpperArm: { z: -0.10 } },
+    love:      { head: { x: -0.06, z: 0.10 }, chest: { x: -0.05 } },
+    flirty:    { head: { x: -0.04, y: -0.08, z: 0.10 } },
+    wink:      { head: { z: 0.08 } },
     sad:       { head: { x: 0.28 }, chest: { x: 0.14 }, leftUpperArm: { z: 0.14 }, rightUpperArm: { z: -0.14 } },
+    cry:       { head: { x: 0.32 }, chest: { x: 0.16 }, leftUpperArm: { z: 0.18 }, rightUpperArm: { z: -0.18 } },
+    pout:      { head: { x: 0.10, y: -0.10 }, chest: { x: 0.04 } },
     angry:     { spine: { x: 0.14 }, head: { x: 0.08 }, chest: { x: 0.05 } },
     anxious:   { head: { x: 0.12, y: 0.06 }, leftUpperArm: { z: 0.10 }, rightUpperArm: { z: -0.10 } },
+    scared:    { spine: { x: 0.10 }, head: { x: 0.10 }, leftUpperArm: { z: 0.16 }, rightUpperArm: { z: -0.16 } },
     surprised: { head: { x: -0.16 }, chest: { x: -0.06 } },
+    shocked:   { head: { x: -0.18 }, chest: { x: -0.07 }, spine: { x: -0.05 } },
+    confused:  { head: { z: 0.16, x: -0.04 } },
     relaxed:   {},
+    calm:      {},
+    sleepy:    { head: { x: 0.22, z: 0.10 }, chest: { x: 0.08 } },
+    fun:       {},
     neutral:   {},
   };
   const POSE_BONES = ['hips', 'head', 'neck', 'chest', 'upperChest', 'spine',

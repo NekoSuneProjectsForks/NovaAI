@@ -40,9 +40,15 @@ class GenerationResult:
 
 
 _SAD_WORDS = ("sad", "upset", "hurt", "depressed", "annoyed", "lonely", "cry")
-_HAPPY_WORDS = ("happy", "joy", "love", "excited", "awesome", "great", "lol", "haha")
-_ANXIOUS_WORDS = ("scared", "afraid", "nervous", "worried", "anxious")
+_HAPPY_WORDS = ("happy", "joy", "awesome", "great", "lol", "haha", "yay", "glad")
+_ANXIOUS_WORDS = ("nervous", "worried", "anxious", "uneasy")
 _ANGRY_WORDS = ("angry", "mad", "furious", "irritated", "rage")
+_LOVE_WORDS = ("love you", "i love", "adore", "my crush", "sweetheart", "darling", "♥", "❤")
+_BLUSH_WORDS = ("blush", "shy", "embarrassed", "flustered", "senpai", "cutie", "you're cute", "so cute")
+_EXCITED_WORDS = ("excited", "can't wait", "cant wait", "so hyped", "amazing", "let's go", "lets go", "woohoo")
+_SURPRISED_WORDS = ("surprised", "what?!", "no way", "really?!", "omg", "whoa", "wow")
+_SCARED_WORDS = ("scared", "afraid", "terrified", "creepy", "frightened")
+_SLEEPY_WORDS = ("sleepy", "tired", "yawn", "exhausted", "goodnight", "good night")
 _DANGER_WORDS = (
     "danger",
     "fire",
@@ -56,13 +62,26 @@ _DANGER_WORDS = (
 
 
 def detect_emotion(text: str) -> str:
-    """Keyword-based emotion tag matching the avatar's expression presets."""
+    """Keyword-based emotion tag matching the avatar's expression set."""
     normalized = str(text or "").lower()
-    # Order matters: check angry before sad so "angry" is not absorbed by sad.
+    # Order matters: more specific/feminine cues first, then the broad buckets,
+    # and angry before sad so "angry" isn't absorbed by sad.
+    if any(word in normalized for word in _LOVE_WORDS):
+        return "love"
+    if any(word in normalized for word in _BLUSH_WORDS):
+        return "blush"
+    if any(word in normalized for word in _EXCITED_WORDS):
+        return "excited"
     if any(word in normalized for word in _ANGRY_WORDS):
         return "angry"
+    if any(word in normalized for word in _SCARED_WORDS):
+        return "scared"
     if any(word in normalized for word in _ANXIOUS_WORDS):
         return "anxious"
+    if any(word in normalized for word in _SURPRISED_WORDS):
+        return "surprised"
+    if any(word in normalized for word in _SLEEPY_WORDS):
+        return "sleepy"
     if any(word in normalized for word in _SAD_WORDS):
         return "sad"
     if any(word in normalized for word in _HAPPY_WORDS):
