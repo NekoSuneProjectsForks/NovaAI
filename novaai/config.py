@@ -256,6 +256,7 @@ class Config:
     llm_api_key: str | None
     llm_keep_alive: str
     llm_num_predict: int
+    llm_num_ctx: int
     llm_cli_command: str | None
     claude_cli_path: str | None
     codex_cli_path: str | None
@@ -408,6 +409,17 @@ class Config:
             if performance_profile is not None
             else max(48, int(os.getenv("OLLAMA_NUM_PREDICT", "1200")))
         )
+        # Context window sent to Ollama. 0 = leave it to Ollama's default.
+        # Set this (e.g. 4096) when a backend GPU is small: long-context models
+        # like dolphin3/llama3.2 advertise a 128K window, and Ollama sizes its
+        # memory estimate for the *full* window, which makes it refuse to load
+        # on modest GPUs ("requires NN GiB"). Capping num_ctx fixes that.
+        llm_num_ctx = max(
+            0,
+            int(
+                os.getenv("OLLAMA_NUM_CTX", os.getenv("LLM_NUM_CTX", "0"))
+            ),
+        )
         xtts_stream_chunk_size = (
             performance_profile.xtts_stream_chunk_size
             if performance_profile is not None
@@ -527,6 +539,7 @@ class Config:
                 or os.getenv("OLLAMA_KEEP_ALIVE", "30m")
             ),
             llm_num_predict=llm_num_predict,
+            llm_num_ctx=llm_num_ctx,
             llm_cli_command=parse_optional_str_env("LLM_CLI_COMMAND"),
             claude_cli_path=parse_optional_str_env("CLAUDE_CLI_PATH"),
             codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),

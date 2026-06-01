@@ -640,15 +640,21 @@ def request_reply(
     num_predict = max_tokens if max_tokens else config.llm_num_predict
 
     if config.llm_provider == "ollama":
+        options = {
+            "temperature": config.temperature,
+            "num_predict": num_predict,
+        }
+        # Only pin the context window when configured; otherwise let Ollama
+        # pick its default. Capping it lets long-context models load on small
+        # GPUs (see OLLAMA_NUM_CTX in config.py).
+        if config.llm_num_ctx > 0:
+            options["num_ctx"] = config.llm_num_ctx
         payload = {
             "model": config.model,
             "messages": messages,
             "stream": False,
             "keep_alive": config.llm_keep_alive,
-            "options": {
-                "temperature": config.temperature,
-                "num_predict": num_predict,
-            },
+            "options": options,
         }
         return _request_ollama_reply(user_text, config, payload, web_context)
 
