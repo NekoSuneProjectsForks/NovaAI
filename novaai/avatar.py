@@ -281,10 +281,25 @@ class AvatarBridge:
         import asyncio
 
         asyncio.set_event_loop(self.ws_loop)
+
+        async def _serve() -> None:
+            # websockets >= 14 builds the server against the *running* loop, so
+            # serve() must be awaited from inside the loop (calling it before
+            # run_until_complete raises "no running event loop"). Awaiting the
+            # returned Server also works on the older (<14) API.
+            server = await websockets.serve(
+                self._ws_handler, self.http_host, self.ws_port
+            )
+            try:
+                await asyncio.Future()  # run until the loop is stopped
+            finally:
+                server.close()
+                await server.wait_closed()
+
         try:
-            start_server = websockets.serve(self._ws_handler, self.http_host, self.ws_port)
-            self.ws_loop.run_until_complete(start_server)
-            self.ws_loop.run_forever()
+            self.ws_loop.run_until_complete(_serve())
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
             print(f"[NovaAI Avatar] WebSocket bridge failed to start: {exc}")
 
