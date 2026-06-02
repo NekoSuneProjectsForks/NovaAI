@@ -165,6 +165,17 @@ def normalize_tts_provider(value: str) -> str:
     return "xtts"
 
 
+def normalize_tts_output(value: str | None) -> str:
+    """Where spoken replies play: the server 'speaker', the 'browser' (avatar
+    overlay), or 'both'."""
+    normalized = (value or "").strip().lower()
+    if normalized in {"browser", "avatar", "web", "client"}:
+        return "browser"
+    if normalized in {"both", "all"}:
+        return "both"
+    return "speaker"
+
+
 def normalize_twitch_reply_mode(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"all", "everything", "every"}:
@@ -277,6 +288,7 @@ class Config:
     codex_cli_path: str | None
     cli_model: str | None
     tts_provider: str
+    tts_output: str
     tts_language: str
     xtts_model_name: str
     xtts_speaker: str
@@ -563,6 +575,7 @@ class Config:
             codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),
             cli_model=parse_optional_str_env("LLM_CLI_MODEL"),
             tts_provider=tts_provider,
+            tts_output=normalize_tts_output(os.getenv("TTS_OUTPUT", "speaker")),
             tts_language=os.getenv("XTTS_LANGUAGE")
             or os.getenv("TTS_LANG")
             or os.getenv("STT_LANGUAGE", "en"),

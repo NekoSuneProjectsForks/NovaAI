@@ -368,6 +368,7 @@ Copy `.env.example` to `.env` and tweak what you need:
 |---------|---------|-------------|
 | `VOICE_ENABLED` | `false` | Start with voice replies on |
 | `TTS_PROVIDER` | `xtts` | Voice engine: `xtts` or `gtts` |
+| `TTS_OUTPUT` | `speaker` | Where the voice plays: `speaker` (server), `browser` (avatar overlay plays it + lip-syncs), or `both`. Also in **Settings → Voice**. |
 | `XTTS_SPEED` | `1.0` | Speaking pace multiplier |
 | `XTTS_USE_GPU` | `true` | Use GPU for voice synthesis |
 | `XTTS_STREAM_OUTPUT` | `true` | Stream audio while generating |

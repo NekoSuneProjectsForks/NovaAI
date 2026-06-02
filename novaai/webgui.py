@@ -209,6 +209,7 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
         "label": "Voice (TTS)",
         "fields": [
             {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
+            {"key": "tts_output", "label": "Voice output", "type": "select", "options": ["speaker", "browser", "both"]},
             {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
             {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
             {"key": "xtts_speed", "label": "Speed", "type": "float"},
@@ -972,20 +973,32 @@ class Api:
 
     def _speak(self, text: str, emotion: str = "neutral") -> None:
         """Speak text via TTS, driving avatar emotion + lip-sync if present."""
-        if self.avatar is not None:
+        # Where the spoken reply plays: server "speaker", the "browser" (avatar
+        # overlay does its own playback + lip-sync), or "both".
+        out = getattr(self.config, "tts_output", "speaker")
+        to_speaker = out in ("speaker", "both")
+        to_browser = out in ("browser", "both") and self.avatar is not None
+        # In speaker mode the server playback blocks, so it owns the speaking
+        # window (start now / stop in finally). In browser-only mode the overlay
+        # plays the audio itself and manages speaking + lip-sync from the 'tts'
+        # message, so we don't open/close the window here.
+        if self.avatar is not None and to_speaker:
             try:
                 self.avatar.publish_speaking(True, emotion)
             except Exception:
                 pass
-        cb = self._amplitude_cb() if self.avatar is not None else None
+        cb = self._amplitude_cb() if (self.avatar is not None and to_speaker) else None
         try:
             audio_path = speak_text(text, self.config, self.state, on_amplitude=cb)
-            if should_play_audio_after_synthesis(self.config) and not self._stopped():
+            if to_browser and not self._stopped():
+                # Cache-bust so the browser fetches this reply, not the previous one.
+                self.avatar.publish_tts(f"/tts-audio?t={int(time.time() * 1000)}", emotion)
+            if to_speaker and should_play_audio_after_synthesis(self.config) and not self._stopped():
                 play_audio_file(audio_path, self.config.speaker_device_index, on_amplitude=cb)
         except Exception:
             pass
         finally:
-            if self.avatar is not None:
+            if self.avatar is not None and to_speaker:
                 try:
                     self.avatar.publish_viseme(0.0)
                     self.avatar.publish_speaking(False, emotion)

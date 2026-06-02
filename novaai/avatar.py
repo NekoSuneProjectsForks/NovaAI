@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
     websockets = None
     WebSocketServerProtocol = object
 
-from .paths import AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
+from .paths import AUDIO_DIR, AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
 
 # Generous cap for VRM uploads (they can be tens of MB).
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
@@ -113,6 +113,18 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
                 self._serve_file(local_path, content_type=ctype)
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
+            return
+
+        if path == "/tts-audio":
+            # The latest synthesized TTS reply, for browser-side playback.
+            audio_types = {".mp3": "audio/mpeg", ".wav": "audio/wav"}
+            candidates = [AUDIO_DIR / "latest_reply.wav", AUDIO_DIR / "latest_reply.mp3"]
+            existing = [p for p in candidates if p.is_file()]
+            if not existing:
+                self.send_error(HTTPStatus.NOT_FOUND, "No TTS audio")
+                return
+            latest = max(existing, key=lambda p: p.stat().st_mtime)
+            self._serve_file(latest, content_type=audio_types.get(latest.suffix.lower(), "audio/wav"))
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
@@ -222,13 +234,18 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read file")
             return
 
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(content)))
-        # Avoid the browser serving a stale avatar.html after updates.
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            # Avoid the browser serving a stale avatar.html after updates.
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Browser aborted/seeked/closed mid-transfer (common for media like
+            # MMD audio). Harmless — don't spam the console with a traceback.
+            pass
 
 
 class AvatarHttpServer(socketserver.ThreadingMixIn, HTTPServer):
@@ -384,6 +401,10 @@ class AvatarBridge:
         self._broadcast(
             {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
         )
+
+    def publish_tts(self, url: str, emotion: str = "neutral") -> None:
+        """Tell the overlay to play a TTS reply in the browser (with lip-sync)."""
+        self._broadcast({"type": "tts", "url": url, "emotion": emotion})
 
     def publish_mmd(self, motion_url: str, audio_url: str = "", camera_url: str = "", loop: bool = False) -> None:
         """Tell the overlay to play an MMD dance (motion + optional audio/camera)."""

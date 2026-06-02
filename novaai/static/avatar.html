@@ -274,6 +274,9 @@
   let lastVisemeAt = 0;   // perf.now() of the last real amplitude update
   let speaking = false;
   let currentEmotion = 'neutral';
+  // Browser-played TTS (tts_output=browser): the overlay plays the reply itself
+  // and lip-syncs from a Web Audio analyser on that audio.
+  let ttsCtx = null, ttsAnalyser = null, ttsData = null, ttsAudio = null, ttsActive = false;
   let boneNodes = {};     // cached humanoid bone nodes for posing
   let dancing = false;    // rhythmic dance overlay when enjoying music
 
@@ -898,11 +901,41 @@
   function unlockAudio() {
     audioUnlocked = true;
     if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
+    if (ttsCtx && ttsCtx.state === 'suspended') { try { ttsCtx.resume(); } catch (e) {} }
     if (mmdAudio) { try { mmdAudio.play(); } catch (e) {} }
+    if (ttsAudio) { try { ttsAudio.play(); } catch (e) {} }
   }
   if (audioUnlockBtn) audioUnlockBtn.addEventListener('click', unlockAudio);
   window.addEventListener('pointerdown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
   window.addEventListener('keydown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
+
+  // Play a TTS reply in the browser and lip-sync from its audio (used when the
+  // server is set to tts_output=browser). The mouth is driven by the analyser
+  // RMS in the render loop; expression comes from the message.
+  function playTtsAudio(url, emotion) {
+    try {
+      if (emotion) { setExpressionStatus(emotion); applyExpression(emotion); }
+      if (!ttsCtx) ttsCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ttsCtx.state === 'suspended') ttsCtx.resume().catch(() => {});
+      if (ttsAudio) { try { ttsAudio.pause(); } catch (e) {} }
+      const a = new Audio(url);
+      a.crossOrigin = 'anonymous';
+      const src = ttsCtx.createMediaElementSource(a);
+      if (!ttsAnalyser) {
+        ttsAnalyser = ttsCtx.createAnalyser();
+        ttsAnalyser.fftSize = 512;
+        ttsData = new Uint8Array(ttsAnalyser.fftSize);
+      }
+      src.connect(ttsAnalyser);
+      ttsAnalyser.connect(ttsCtx.destination);
+      ttsAudio = a;
+      ttsActive = true; speaking = true;
+      const done = () => { ttsActive = false; speaking = false; mouthTarget = 0; };
+      a.onended = done; a.onerror = done;
+      a.play().then(() => { if (audioUnlockBtn) audioUnlockBtn.style.display = 'none'; })
+       .catch(() => { if (audioUnlockBtn) audioUnlockBtn.style.display = 'block'; logMessage('TTS: click to enable audio.'); });
+    } catch (e) { logMessage('TTS play failed: ' + (e.message || e)); }
+  }
 
   // ── Live MMD tuning panel (non-transparent overlay) ──────────────────────────
   function _mmdReapply() {
@@ -1098,6 +1131,14 @@
         // MMD fully drives bones + morphs (+ camera) while a dance plays.
         updateMmd();
       } else {
+        // Browser-played TTS: drive the mouth from the audio analyser (RMS).
+        if (ttsActive && ttsAnalyser) {
+          ttsAnalyser.getByteTimeDomainData(ttsData);
+          let sum = 0;
+          for (let i = 0; i < ttsData.length; i++) { const v = (ttsData[i] - 128) / 128; sum += v * v; }
+          mouthTarget = Math.max(0, Math.min(1, Math.sqrt(sum / ttsData.length) * 4));
+          lastVisemeAt = performance.now();
+        }
         // Lip-sync: prefer real TTS amplitude; if none is arriving while she's
         // speaking (e.g. an external player that can't report levels), fall back
         // to a synthetic talking oscillation so the mouth still moves.
@@ -1229,6 +1270,10 @@
           setExpressionStatus(payload.emotion);
           applyExpression(payload.emotion);
         }
+      }
+
+      if (payload.type === 'tts') {
+        playTtsAudio(payload.url, payload.emotion);
       }
 
       if (payload.type === 'dance') {
