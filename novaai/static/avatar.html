@@ -156,6 +156,8 @@
   <div style="display:flex;gap:4px;margin-bottom:8px"><button data-ik="1" style="flex:1;padding:6px">On</button><button data-ik="0" style="flex:1;padding:6px">Off</button></div>
   <div style="margin-bottom:6px">Arms down: <span id="mt-armval"></span>°</div>
   <div style="display:flex;gap:4px;margin-bottom:8px"><button id="mt-arm-dn" style="flex:1;padding:6px">− less</button><button id="mt-arm-up" style="flex:1;padding:6px">+ more</button></div>
+  <div style="margin-bottom:6px">Camera zoom: <span id="mt-zoomval"></span>×</div>
+  <div style="display:flex;gap:4px;margin-bottom:8px"><button id="mt-zoom-in" style="flex:1;padding:6px">− closer</button><button id="mt-zoom-out" style="flex:1;padding:6px">+ farther</button></div>
   <button id="mt-replay" style="width:100%;padding:8px;background:#7c4dff">Replay dance</button>
   <div style="margin-top:8px;font-size:11px;color:#9bb1c7">Settings save automatically. Tell the dev these numbers once it looks right.</div>
 </div>
@@ -204,6 +206,7 @@
 <script type="module">
   import * as THREE from 'three';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   import { VRMLoaderPlugin } from '@pixiv/three-vrm';
   import * as MMDParser from 'mmd-parser';
 
@@ -233,6 +236,25 @@
     document.body.classList.add('obs-mode');
     requestAnimationFrame(resize);  // canvas is now full-viewport; re-fit
   }
+
+  // Mouse camera: drag to orbit, scroll to zoom, right-drag to pan. Enabled on
+  // the normal web view; off in the OBS overlay (?transparent=1) so the source
+  // stays fixed. Double-click to snap back to auto framing.
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = true;
+  controls.minDistance = 0.15;
+  controls.maxDistance = 50;
+  controls.enabled = !TRANSPARENT;
+  let manualCamera = false;          // user grabbed the camera → stop auto-framing it
+  controls.addEventListener('start', () => { manualCamera = true; });
+  canvas.addEventListener('dblclick', () => { manualCamera = false; frameAvatar(); });
+  // Visible confirmation the camera-controls build is loaded (helps spot a stale
+  // cached page). If you DON'T see this line in the log, hard-refresh the page.
+  setTimeout(() => logMessage(controls.enabled
+    ? '🖱 Camera controls ON — drag to orbit, scroll to zoom, right-drag to pan, double-click to reset.'
+    : 'Camera controls off (OBS overlay mode).'), 0);
 
   const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
   scene.add(light);
@@ -275,6 +297,10 @@
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
+    // Orbit/zoom pivots on the avatar's centre.
+    controls.target.copy(center);
+    // Don't yank the camera back while the user is driving it manually.
+    if (manualCamera) { controls.update(); return; }
     const fov = (camera.fov * Math.PI) / 180;
     const aspect = camera.aspect || 1;
     const fitHeight = size.y / 2 / Math.tan(fov / 2);
@@ -282,9 +308,10 @@
     const dist = Math.max(fitHeight, fitWidth) * 1.15 + size.z;
     camera.position.set(center.x, center.y, center.z + dist);
     camera.near = Math.max(0.01, dist / 100);
-    camera.far = dist * 20;
+    camera.far = Math.max(1000, dist * 50);   // generous so zoom-out never clips
     camera.updateProjectionMatrix();
     camera.lookAt(center.x, center.y, center.z);
+    controls.update();
   }
 
   function logMessage(message) {
@@ -552,10 +579,14 @@
   function _lsGet(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } }
   function _lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
   const mmdCfg = {
-    axis: parseInt(_lsGet('mmdAxis', (QUERY && QUERY.get('mmdaxis')) || '1'), 10) || 0,
-    ik: _lsGet('mmdIK', (QUERY && QUERY.get('ik')) || '1') !== '0',
+    // Default axis 2 = the conversion used by the working vrm-dance-viewer
+    // (position.x*-1, rotation.x*-1, rotation.w*-1). Key is V2 so it overrides
+    // any older saved default.
+    axis: parseInt(_lsGet('mmdAxisV2', (QUERY && QUERY.get('mmdaxis')) || '2'), 10) || 0,
+    ik: _lsGet('mmdIKv2', (QUERY && QUERY.get('ik')) || '1') !== '0',  // default ON: CCD leg IK (knee-hinged)
     armDeg: parseFloat(_lsGet('mmdArm', (QUERY && QUERY.get('armangle')) || '35')) || 0,
     knee: parseFloat(_lsGet('mmdKnee', '1')) || 1,   // +1 knees forward, -1 backward
+    zoom: parseFloat(_lsGet('mmdZoom', (QUERY && QUERY.get('mmdzoom')) || '1.35')) || 1.35,  // camera pull-back
   };
   // The torso is handled specially (see updateMmd): MMD splits it into upper
   // body (上半身) and lower body (下半身) both under the center, while VRM has a
@@ -625,6 +656,44 @@
     const desired = toW.clone().sub(fromW).normalize().applyQuaternion(pq);
     if (desired.lengthSq() < 1e-8) return;
     node.quaternion.setFromUnitVectors(restDirLocal, desired);
+  }
+
+  // CCD leg IK: rotate upperLeg + lowerLeg so the ankle reaches `target`. The
+  // knee (lowerLeg) is constrained to a single-axis hinge that only bends one
+  // way, so it can't snap or hyper-extend (matches vrm-dance-viewer / MMD IK).
+  const _IK_ITERS = 12;
+  const _ikV1 = new THREE.Vector3(), _ikV2 = new THREE.Vector3(), _ikEff = new THREE.Vector3();
+  const _ikQ = new THREE.Quaternion(), _ikPWQ = new THREE.Quaternion(), _ikE = new THREE.Euler();
+  function _solveLegCCD(leg, target) {
+    const chain = [leg.lo, leg.up];   // effector-first
+    for (let it = 0; it < _IK_ITERS; it++) {
+      for (const bone of chain) {
+        const eff = leg.ft.getWorldPosition(_ikEff);          // ankle = foot origin
+        const bp = bone.getWorldPosition(_ikV1);
+        const toEff = _ikV2.copy(eff).sub(bp);
+        const toTgt = _ikQ; // reuse later; compute target dir in a fresh vec
+        const tdir = new THREE.Vector3().copy(target).sub(bp);
+        if (toEff.lengthSq() < 1e-10 || tdir.lengthSq() < 1e-10) continue;
+        toEff.normalize(); tdir.normalize();
+        const qWorld = new THREE.Quaternion().setFromUnitVectors(toEff, tdir);
+        // World rotation → bone-local delta: parentWorld⁻¹ · q · parentWorld
+        bone.parent.getWorldQuaternion(_ikPWQ);
+        const inv = _ikPWQ.clone().invert();
+        const localDelta = inv.multiply(qWorld).multiply(_ikPWQ);
+        bone.quaternion.multiply(localDelta);
+        if (bone === leg.lo) {
+          // Knee hinge: keep rotation on local X only, bending one direction
+          // (mmdCfg.knee flips it for models whose knee bends the other way).
+          _ikE.setFromQuaternion(bone.quaternion, 'XYZ');
+          _ikE.y = 0; _ikE.z = 0;
+          _ikE.x = mmdCfg.knee >= 0
+            ? Math.max(-2.7, Math.min(0, _ikE.x))     // bend backward (typical)
+            : Math.min(2.7, Math.max(0, _ikE.x));     // bend forward
+          bone.quaternion.setFromEuler(_ikE);
+        }
+        bone.updateWorldMatrix(true, false);
+      }
+    }
   }
 
   // Arm A-pose offset: VRM rests in a T-pose (arms straight out) but MMD rests in
@@ -845,12 +914,13 @@
     set('mt-kneeval', mmdCfg.knee > 0 ? 'Forward' : 'Backward');
     set('mt-ikval', mmdCfg.ik ? 'On' : 'Off');
     set('mt-armval', Math.round(mmdCfg.armDeg));
+    set('mt-zoomval', (mmdCfg.zoom || 1).toFixed(2));
     const axisWrap = document.getElementById('mt-axis');
     if (axisWrap && !axisWrap.childElementCount) {
       [0, 1, 2, 3].forEach((n) => {
         const b = document.createElement('button');
         b.textContent = n; b.style.cssText = 'flex:1;padding:6px';
-        b.onclick = () => { mmdCfg.axis = n; _lsSet('mmdAxis', n); _refreshTunePanel(); _mmdReapply(); };
+        b.onclick = () => { mmdCfg.axis = n; _lsSet('mmdAxisV2', n); _refreshTunePanel(); _mmdReapply(); };
         axisWrap.appendChild(b);
       });
     }
@@ -863,11 +933,15 @@
       mmdCfg.knee = parseFloat(b.dataset.knee); _lsSet('mmdKnee', mmdCfg.knee); _refreshTunePanel(); _mmdReapply();
     });
     panel.querySelectorAll('[data-ik]').forEach((b) => b.onclick = () => {
-      mmdCfg.ik = b.dataset.ik === '1'; _lsSet('mmdIK', mmdCfg.ik ? '1' : '0'); _refreshTunePanel(); _mmdReapply();
+      mmdCfg.ik = b.dataset.ik === '1'; _lsSet('mmdIKv2', mmdCfg.ik ? '1' : '0'); _refreshTunePanel(); _mmdReapply();
     });
     const armSet = (d) => { mmdCfg.armDeg = Math.max(-90, Math.min(90, mmdCfg.armDeg + d)); _lsSet('mmdArm', mmdCfg.armDeg); _refreshTunePanel(); _mmdReapply(); };
     const dn = document.getElementById('mt-arm-dn'); if (dn) dn.onclick = () => armSet(-5);   // less down
     const upb = document.getElementById('mt-arm-up'); if (upb) upb.onclick = () => armSet(5);  // more down
+    // Camera zoom updates live (no re-apply needed) — used by the camera each frame.
+    const zoomSet = (d) => { mmdCfg.zoom = Math.max(0.5, Math.min(4, (mmdCfg.zoom || 1) + d)); _lsSet('mmdZoom', mmdCfg.zoom); _refreshTunePanel(); };
+    const zin = document.getElementById('mt-zoom-in'); if (zin) zin.onclick = () => zoomSet(-0.15);   // closer
+    const zout = document.getElementById('mt-zoom-out'); if (zout) zout.onclick = () => zoomSet(0.15); // farther
     const rep = document.getElementById('mt-replay'); if (rep) rep.onclick = _mmdReapply;
     _refreshTunePanel();
   }
@@ -890,11 +964,15 @@
 
   function updateMmd() {
     if (!mmd || !currentVrm) return;
-    // Sync to audio when present so motion never drifts from the music.
-    let t = mmdAudio ? mmdAudio.currentTime : (clock.elapsedTime - mmd.start);
+    // Clock-based timeline so the FULL motion always plays — don't tie it to the
+    // song (a shorter song would otherwise freeze the dance halfway). Audio runs
+    // in parallel from the same start, so they stay in sync.
+    let t = clock.elapsedTime - mmd.start;
     if (t >= mmd.duration) {
-      if (mmd.loop) { mmd.start = clock.elapsedTime; t = 0; if (mmdAudio) { try { mmdAudio.currentTime = 0; } catch (e) {} } }
-      else { stopMmd(true); return; }
+      if (mmd.loop) {
+        mmd.start = clock.elapsedTime; t = 0;
+        if (mmdAudio) { try { mmdAudio.currentTime = 0; mmdAudio.play().catch(() => {}); } catch (e) {} }
+      } else { stopMmd(true); return; }
     }
     const I = new THREE.Quaternion();
     // Sample a torso bone's rotation/position by trying its name aliases.
@@ -938,9 +1016,12 @@
     if (T.spine) T.spine.quaternion.copy(low).invert().multiply(up);
     if (T.chest) T.chest.quaternion.copy(up2 || I);
 
-    // Leg IK: solve after the FK + torso so the hips are in their final place.
-    // The ankle target = rest ankle + the animated IK offset (feet stay planted
-    // while the hips move). Knee bends forward (pole = world forward).
+    // Leg IK (analytic 2-bone), after FK + torso so the hips are placed first.
+    // Target = rest ankle + the animated foot-IK offset, so feet stay planted as
+    // the hips move. Bones are aimed with MINIMAL rotation (setFromUnitVectors)
+    // so the leg never twists around its own axis — that twist is what made the
+    // feet splay outward (duck-footed) under CCD. The knee bends toward the
+    // forward pole; flip with the panel's Knees toggle.
     if (mmd.ik) {
       currentVrm.scene.updateMatrixWorld(true);
       const pole = new THREE.Vector3(0, 0, mmdCfg.knee).applyQuaternion(mmd.ik.sceneQuat);
@@ -956,6 +1037,7 @@
         leg.up.updateWorldMatrix(true, false);
         const Bw = leg.lo.getWorldPosition(new THREE.Vector3());
         _aimBone(leg.lo, Bw, target, _DOWN);
+        leg.lo.updateWorldMatrix(true, false);
       }
     }
 
@@ -969,16 +1051,21 @@
       });
     }
     // Camera. MMD distance is in MMD units, so scale it to metres like
-    // positions (without this the camera sits ~12× too far → zoomed way out).
-    if (mmd.camKeys.length) {
+    // positions. Pull back a bit (mmdCfg.zoom) and use a tiny near plane so
+    // close clothes/geometry don't clip and vanish. Skipped once the user grabs
+    // the camera (manual orbit/zoom wins; double-click to return to auto).
+    if (mmd.camKeys.length && !manualCamera) {
       const c = _sampleCamera(mmd.camKeys, t);
       if (c) {
         const e = new THREE.Euler(-c.rot[0], -c.rot[1], c.rot[2], 'YXZ');
         const dir = new THREE.Vector3(0, 0, 1).applyEuler(e);
         const target = c.target.clone();
-        camera.position.copy(target).add(dir.multiplyScalar(Math.abs(c.distance) * MMD_POS_SCALE));
+        const dist = Math.abs(c.distance) * MMD_POS_SCALE * (mmdCfg.zoom || 1);
+        camera.position.copy(target).add(dir.multiplyScalar(dist));
         camera.lookAt(target);
-        if (c.fov) { camera.fov = Math.max(10, Math.min(80, c.fov)); camera.updateProjectionMatrix(); }
+        camera.near = 0.01;   // avoid near-plane clipping when close
+        camera.fov = c.fov ? Math.max(10, Math.min(80, c.fov)) : camera.fov;
+        camera.updateProjectionMatrix();
       }
     }
   }
@@ -1042,6 +1129,9 @@
 
       currentVrm.update(delta);
     }
+    // Let the dance camera own the view while it's driving; otherwise OrbitControls.
+    const mmdCamDriving = mmd && mmd.camKeys && mmd.camKeys.length && !manualCamera;
+    if (controls.enabled && !mmdCamDriving) controls.update();
     renderer.render(scene, camera);
   }
 
@@ -1070,6 +1160,10 @@
         vrm.scene.rotation.set(0, Math.PI, 0);   // face the camera
         vrm.scene.position.set(0, 0, 0);
         vrm.scene.scale.setScalar(1);
+        // Stop limbs/meshes from vanishing when a dance moves them outside the
+        // rest-pose bounding box (three.js frustum-culls skinned meshes by their
+        // precomputed bounds, which don't account for animation).
+        vrm.scene.traverse((o) => { if (o.isMesh || o.isSkinnedMesh) o.frustumCulled = false; });
         cacheBones(vrm);                          // grab humanoid bones for posing
         applyRestPoseImmediate();                 // lower arms out of the T-pose
         frameAvatar();                            // auto-fit to the (posed) model
