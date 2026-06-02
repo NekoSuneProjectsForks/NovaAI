@@ -581,9 +581,10 @@
   function _restOffset() {
     const Z = new THREE.Vector3(0, 0, 1);
     const off = {};
-    // Left side rotates one way around Z, right side the other (mirror).
-    off.leftUpperArm  = new THREE.Quaternion().setFromAxisAngle(Z, -MMD_ARM_ANGLE);
-    off.rightUpperArm = new THREE.Quaternion().setFromAxisAngle(Z,  MMD_ARM_ANGLE);
+    // Rotate the T-pose arms DOWN to MMD's A-pose rest. Left side rotates one way
+    // around Z, right the other (mirror). Sign tuned so arms drop, not raise.
+    off.leftUpperArm  = new THREE.Quaternion().setFromAxisAngle(Z,  MMD_ARM_ANGLE);
+    off.rightUpperArm = new THREE.Quaternion().setFromAxisAngle(Z, -MMD_ARM_ANGLE);
     return off;
   }
   const MMD_REST_OFFSET = _restOffset();
