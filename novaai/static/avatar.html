@@ -536,9 +536,11 @@
   // ?mmdaxis=0..3 (and ?armangle=35) to find the one that looks right, then tell
   // me which number — I'll bake it as the default. 1 = chirality-preserving Z-flip.
   const MMD_AXIS = parseInt((QUERY && QUERY.get('mmdaxis')) || '1', 10);
-  const MMD_BONE_MAP = {
-    '全ての親':'hips','全て親':'hips','センター':'hips','グルーブ':'hips',
-    '上半身':'spine','上半身2':'chest','首':'neck','頭':'head',
+  // The torso is handled specially (see updateMmd): MMD splits it into upper
+  // body (上半身) and lower body (下半身) both under the center, while VRM has a
+  // single hips→spine chain. These are the SIMPLE 1:1 bones only.
+  const MMD_SIMPLE_MAP = {
+    '首':'neck','頭':'head',
     '左肩':'leftShoulder','左腕':'leftUpperArm','左ひじ':'leftLowerArm','左手首':'leftHand',
     '右肩':'rightShoulder','右腕':'rightUpperArm','右ひじ':'rightLowerArm','右手首':'rightHand',
     '左足':'leftUpperLeg','左ひざ':'leftLowerLeg','左足首':'leftFoot','左つま先':'leftToes',
@@ -554,6 +556,11 @@
     '右中指１':'rightMiddleProximal','右中指２':'rightMiddleIntermediate','右中指３':'rightMiddleDistal',
     '右薬指１':'rightRingProximal','右薬指２':'rightRingIntermediate','右薬指３':'rightRingDistal',
     '右小指１':'rightLittleProximal','右小指２':'rightLittleIntermediate','右小指３':'rightLittleDistal',
+  };
+  // Torso bone names (handled specially). Aliases included.
+  const MMD_T = {
+    root: ['全ての親', '全て親'], center: ['センター'], groove: ['グルーブ'],
+    lower: ['下半身'], upper: ['上半身'], upper2: ['上半身2', '上半身２'],
   };
   const MMD_MORPH_MAP = {
     'まばたき':'blink','ウィンク':'blink','ウィンク２':'blink','まばたき右':'blinkRight','ウィンク右':'blinkRight',
@@ -625,28 +632,33 @@
       const buf = await (await fetch(payload.motion)).arrayBuffer();
       const vmd = parser.parseVmd(buf);
 
-      // Group bone motions -> per-VRM-bone sorted keyframes.
-      const bones = new Map();
+      // Convert every MMD bone track once, keyed by its MMD (Japanese) name.
+      const tracks = {};
       const grouped = {};
       for (const m of vmd.motions) (grouped[m.boneName] = grouped[m.boneName] || []).push(m);
       let maxT = 0;
       for (const [jp, list] of Object.entries(grouped)) {
-        const vrmBone = MMD_BONE_MAP[jp];
-        if (!vrmBone) continue;
-        const node = currentVrm.humanoid && currentVrm.humanoid.getNormalizedBoneNode(vrmBone);
-        if (!node) continue;
         list.sort((a, b) => a.frameNum - b.frameNum);
-        const keys = list.map((m) => {
+        tracks[jp] = list.map((m) => {
           const t = m.frameNum / MMD_FPS; maxT = Math.max(maxT, t);
           return { t, q: _convQuat(m.rotation), p: _convPos(m.position) };
         });
-        bones.set(node, {
-          keys,
-          isHips: vrmBone === 'hips',
-          base: node.position.clone(),
-          offset: MMD_REST_OFFSET[vrmBone] || null,   // A-pose→T-pose correction
-        });
       }
+
+      // Resolve VRM nodes for the simple 1:1 bones we actually have tracks for.
+      const hb = currentVrm.humanoid;
+      const simple = [];
+      for (const [jp, vrmBone] of Object.entries(MMD_SIMPLE_MAP)) {
+        if (!tracks[jp]) continue;
+        const node = hb && hb.getNormalizedBoneNode(vrmBone);
+        if (node) simple.push({ jp, node, offset: MMD_REST_OFFSET[vrmBone] || null });
+      }
+      const torso = {
+        hips: hb && hb.getNormalizedBoneNode('hips'),
+        spine: hb && hb.getNormalizedBoneNode('spine'),
+        chest: hb && hb.getNormalizedBoneNode('chest'),
+      };
+      const hipsBase = torso.hips ? torso.hips.position.clone() : null;
 
       // Morphs -> per-expression sorted keyframes.
       const morphs = new Map();
@@ -684,8 +696,8 @@
         tryPlayMmdAudio();
       }
 
-      mmd = { bones, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop };
-      logMessage(`MMD: playing (${bones.size} bones, ${morphs.size} morphs, ${camKeys.length} cam keys, ${maxT.toFixed(1)}s)`);
+      mmd = { tracks, simple, torso, hipsBase, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop };
+      logMessage(`MMD: playing (${simple.length} bones + torso, ${morphs.size} morphs, ${camKeys.length} cam keys, ${maxT.toFixed(1)}s)`);
       setModelStatus('Dancing (MMD)');
     } catch (e) {
       logMessage(`MMD load failed: ${e.message || e}`);
@@ -723,8 +735,8 @@
     if (mmdAudio) { try { mmdAudio.pause(); } catch (e) {} mmdAudio = null; }
     if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
     if (!mmd) return;
-    // Restore bone base positions we moved (hips).
-    mmd.bones.forEach((tr, node) => { if (tr.isHips) node.position.copy(tr.base); });
+    // Restore the hips base position we moved.
+    if (mmd.torso && mmd.torso.hips && mmd.hipsBase) mmd.torso.hips.position.copy(mmd.hipsBase);
     mmd = null;
     if (restore && currentVrm) {
       applyRestPoseImmediate();
@@ -742,19 +754,47 @@
       if (mmd.loop) { mmd.start = clock.elapsedTime; t = 0; if (mmdAudio) { try { mmdAudio.currentTime = 0; } catch (e) {} } }
       else { stopMmd(true); return; }
     }
-    // Bones.
-    mmd.bones.forEach((tr, node) => {
-      const r = _sample(tr.keys, t, 'quat');
+    const I = new THREE.Quaternion();
+    // Sample a torso bone's rotation/position by trying its name aliases.
+    const sampQ = (names) => {
+      for (const n of names) { const k = mmd.tracks[n]; if (k) { const r = _sample(k, t, 'quat'); if (r && r.q) return r.q; } }
+      return null;
+    };
+    const sampP = (names) => {
+      for (const n of names) { const k = mmd.tracks[n]; if (k) { const r = _sample(k, t, 'pos'); if (r && r.p) return r.p; } }
+      return null;
+    };
+
+    // Simple 1:1 bones (arms, legs, hands, head, …). Upper arms get the A-pose
+    // offset; their children inherit it through the hierarchy.
+    for (const s of mmd.simple) {
+      const r = _sample(mmd.tracks[s.jp], t, 'quat');
       if (r && r.q) {
-        // Apply the rest-pose offset (A-pose→T-pose) before the animation.
-        if (tr.offset) node.quaternion.copy(tr.offset).multiply(r.q);
-        else node.quaternion.copy(r.q);
+        if (s.offset) s.node.quaternion.copy(s.offset).multiply(r.q);
+        else s.node.quaternion.copy(r.q);
       }
-      if (tr.isHips) {
-        const pr = _sample(tr.keys, t, 'pos');
-        if (pr && pr.p) node.position.copy(tr.base).add(pr.p);
+    }
+
+    // Torso retarget: MMD center/lower/upper bodies -> VRM hips/spine/chest.
+    // hips = root·center·groove·lower  (so legs, children of hips, follow the
+    // pelvis). spine = lower⁻¹·upper  (so the torso bends independently of the
+    // pelvis tilt, exactly as MMD's separate upper body does). chest = upper2.
+    const T = mmd.torso;
+    const root = sampQ(MMD_T.root) || I, ctr = sampQ(MMD_T.center) || I,
+          grv = sampQ(MMD_T.groove) || I, low = sampQ(MMD_T.lower) || I,
+          up = sampQ(MMD_T.upper) || I, up2 = sampQ(MMD_T.upper2);
+    if (T.hips) {
+      T.hips.quaternion.copy(root).multiply(ctr).multiply(grv).multiply(low);
+      if (mmd.hipsBase) {
+        const pos = mmd.hipsBase.clone();
+        const pr = sampP(MMD_T.root); if (pr) pos.add(pr);
+        const pc = sampP(MMD_T.center); if (pc) pos.add(pc);
+        const pg = sampP(MMD_T.groove); if (pg) pos.add(pg);
+        T.hips.position.copy(pos);
       }
-    });
+    }
+    if (T.spine) T.spine.quaternion.copy(low).invert().multiply(up);
+    if (T.chest) T.chest.quaternion.copy(up2 || I);
     // Morphs (reset known channels first so nothing sticks).
     const em = currentVrm.expressionManager;
     if (em) {
