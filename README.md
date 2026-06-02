@@ -184,6 +184,7 @@ Play **MMD (`.vmd`) dance motions on your VRM avatar** — with optional audio a
 - **Add a dance** from the dedicated **MMD** page (sidebar): each dance is one bundle — a `.vmd` **motion** (required) + an optional **song** (`.mp3`/`.wav`/`.ogg`/`.m4a`) + an optional `.vmd` **camera**, uploaded together and shown as a single row with **Play** and **Delete**. Saved under `data/mmd/sets/`.
 - Pick motion + audio + camera, hit **Play Dance** (with optional **Loop**) and it retargets the MMD motion onto the VRM humanoid, syncs the audio, and (if provided) drives the camera. **Stop** returns to idle.
 - Works in the OBS overlay too (`?transparent=1`).
+- **Move the camera by hand** on the web view: **drag** to orbit, **scroll** to zoom, **right-drag** to pan, **double-click** to snap back to auto framing. (Grabbing the camera overrides a dance's own camera; controls are off in the fixed OBS overlay.)
 
 > ⚙️ MMD→VRM retargeting is best-effort (unlike native MMD players such as [web-mmd](https://github.com/culdo/web-mmd), which drive real PMX rigs). The torso/upper body, head, and hands track well. Open the **non-transparent** overlay (`http://<host>:8766/`) to get a live **MMD body tuning** panel — flip the facing/axis (0–3), knee bend, leg-IK, and arm-down amount and watch the dance fix itself; the choice saves automatically.
 

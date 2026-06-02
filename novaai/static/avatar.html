@@ -206,6 +206,7 @@
 <script type="module">
   import * as THREE from 'three';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   import { VRMLoaderPlugin } from '@pixiv/three-vrm';
   import * as MMDParser from 'mmd-parser';
 
@@ -235,6 +236,20 @@
     document.body.classList.add('obs-mode');
     requestAnimationFrame(resize);  // canvas is now full-viewport; re-fit
   }
+
+  // Mouse camera: drag to orbit, scroll to zoom, right-drag to pan. Enabled on
+  // the normal web view; off in the OBS overlay (?transparent=1) so the source
+  // stays fixed. Double-click to snap back to auto framing.
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = true;
+  controls.minDistance = 0.15;
+  controls.maxDistance = 50;
+  controls.enabled = !TRANSPARENT;
+  let manualCamera = false;          // user grabbed the camera → stop auto-framing it
+  controls.addEventListener('start', () => { manualCamera = true; });
+  canvas.addEventListener('dblclick', () => { manualCamera = false; frameAvatar(); });
 
   const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
   scene.add(light);
@@ -277,6 +292,10 @@
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
+    // Orbit/zoom pivots on the avatar's centre.
+    controls.target.copy(center);
+    // Don't yank the camera back while the user is driving it manually.
+    if (manualCamera) { controls.update(); return; }
     const fov = (camera.fov * Math.PI) / 180;
     const aspect = camera.aspect || 1;
     const fitHeight = size.y / 2 / Math.tan(fov / 2);
@@ -287,6 +306,7 @@
     camera.far = dist * 20;
     camera.updateProjectionMatrix();
     camera.lookAt(center.x, center.y, center.z);
+    controls.update();
   }
 
   function logMessage(message) {
@@ -978,8 +998,9 @@
     }
     // Camera. MMD distance is in MMD units, so scale it to metres like
     // positions. Pull back a bit (mmdCfg.zoom) and use a tiny near plane so
-    // close clothes/geometry don't clip and vanish.
-    if (mmd.camKeys.length) {
+    // close clothes/geometry don't clip and vanish. Skipped once the user grabs
+    // the camera (manual orbit/zoom wins; double-click to return to auto).
+    if (mmd.camKeys.length && !manualCamera) {
       const c = _sampleCamera(mmd.camKeys, t);
       if (c) {
         const e = new THREE.Euler(-c.rot[0], -c.rot[1], c.rot[2], 'YXZ');
@@ -1054,6 +1075,9 @@
 
       currentVrm.update(delta);
     }
+    // Let the dance camera own the view while it's driving; otherwise OrbitControls.
+    const mmdCamDriving = mmd && mmd.camKeys && mmd.camKeys.length && !manualCamera;
+    if (controls.enabled && !mmdCamDriving) controls.update();
     renderer.render(scene, camera);
   }
 
