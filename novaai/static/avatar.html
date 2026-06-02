@@ -303,7 +303,7 @@
     const dist = Math.max(fitHeight, fitWidth) * 1.15 + size.z;
     camera.position.set(center.x, center.y, center.z + dist);
     camera.near = Math.max(0.01, dist / 100);
-    camera.far = dist * 20;
+    camera.far = Math.max(1000, dist * 50);   // generous so zoom-out never clips
     camera.updateProjectionMatrix();
     camera.lookAt(center.x, center.y, center.z);
     controls.update();
@@ -918,11 +918,15 @@
 
   function updateMmd() {
     if (!mmd || !currentVrm) return;
-    // Sync to audio when present so motion never drifts from the music.
-    let t = mmdAudio ? mmdAudio.currentTime : (clock.elapsedTime - mmd.start);
+    // Clock-based timeline so the FULL motion always plays — don't tie it to the
+    // song (a shorter song would otherwise freeze the dance halfway). Audio runs
+    // in parallel from the same start, so they stay in sync.
+    let t = clock.elapsedTime - mmd.start;
     if (t >= mmd.duration) {
-      if (mmd.loop) { mmd.start = clock.elapsedTime; t = 0; if (mmdAudio) { try { mmdAudio.currentTime = 0; } catch (e) {} } }
-      else { stopMmd(true); return; }
+      if (mmd.loop) {
+        mmd.start = clock.elapsedTime; t = 0;
+        if (mmdAudio) { try { mmdAudio.currentTime = 0; mmdAudio.play().catch(() => {}); } catch (e) {} }
+      } else { stopMmd(true); return; }
     }
     const I = new THREE.Quaternion();
     // Sample a torso bone's rotation/position by trying its name aliases.
@@ -1106,6 +1110,10 @@
         vrm.scene.rotation.set(0, Math.PI, 0);   // face the camera
         vrm.scene.position.set(0, 0, 0);
         vrm.scene.scale.setScalar(1);
+        // Stop limbs/meshes from vanishing when a dance moves them outside the
+        // rest-pose bounding box (three.js frustum-culls skinned meshes by their
+        // precomputed bounds, which don't account for animation).
+        vrm.scene.traverse((o) => { if (o.isMesh || o.isSkinnedMesh) o.frustumCulled = false; });
         cacheBones(vrm);                          // grab humanoid bones for posing
         applyRestPoseImmediate();                 // lower arms out of the T-pose
         frameAvatar();                            // auto-fit to the (posed) model
