@@ -250,6 +250,11 @@
   let manualCamera = false;          // user grabbed the camera → stop auto-framing it
   controls.addEventListener('start', () => { manualCamera = true; });
   canvas.addEventListener('dblclick', () => { manualCamera = false; frameAvatar(); });
+  // Visible confirmation the camera-controls build is loaded (helps spot a stale
+  // cached page). If you DON'T see this line in the log, hard-refresh the page.
+  setTimeout(() => logMessage(controls.enabled
+    ? '🖱 Camera controls ON — drag to orbit, scroll to zoom, right-drag to pan, double-click to reset.'
+    : 'Camera controls off (OBS overlay mode).'), 0);
 
   const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
   scene.add(light);
