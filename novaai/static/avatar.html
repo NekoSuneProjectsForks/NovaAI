@@ -607,20 +607,37 @@
     node.quaternion.setFromUnitVectors(restDirLocal, desired);
   }
 
-  // Optional arm rest-pose correction. With the torso retarget in place, the raw
-  // VMD already poses the arms correctly on most VRMs, so this defaults to OFF.
-  // If a model's arms sit too high (stuck near a T-pose), nudge them down with
-  // ?armangle=35 (negative raises). Children (lower arm/hand/fingers) inherit it.
-  const MMD_ARM_ANGLE = (parseFloat((QUERY && QUERY.get('armangle')) || '0') || 0) * Math.PI / 180;
-  function _restOffset() {
+  // Arm A-pose offset: VRM rests in a T-pose (arms straight out) but MMD rests in
+  // an A-pose (arms down), so without this the arms sit out at a T-pose. The
+  // amount is ?armangle (default 35°, negative raises). The DIRECTION is computed
+  // from each arm's real rest geometry (see _computeArmOffsets) so it always
+  // drops the arms regardless of the model's axis convention.
+  const MMD_ARM_ANGLE = (parseFloat((QUERY && QUERY.get('armangle')) || '35') || 0) * Math.PI / 180;
+
+  // Build per-upper-arm local offset quaternions that rotate the (horizontal)
+  // rest arm DOWN by MMD_ARM_ANGLE. Returns {leftUpperArm, rightUpperArm}.
+  function _computeArmOffsets(hb) {
     const off = {};
-    if (!MMD_ARM_ANGLE) return off;   // no correction by default
-    const Z = new THREE.Vector3(0, 0, 1);
-    off.leftUpperArm  = new THREE.Quaternion().setFromAxisAngle(Z,  MMD_ARM_ANGLE);
-    off.rightUpperArm = new THREE.Quaternion().setFromAxisAngle(Z, -MMD_ARM_ANGLE);
+    if (!MMD_ARM_ANGLE || !hb) return off;
+    const up = new THREE.Vector3(0, 1, 0);
+    for (const [armBone, childBone] of [['leftUpperArm', 'leftLowerArm'], ['rightUpperArm', 'rightLowerArm']]) {
+      const a = hb.getNormalizedBoneNode(armBone);
+      const c = hb.getNormalizedBoneNode(childBone);
+      if (!a || !c) continue;
+      const sh = a.getWorldPosition(new THREE.Vector3());
+      const el = c.getWorldPosition(new THREE.Vector3());
+      const restDir = el.sub(sh).normalize();             // horizontal arm direction
+      const axis = new THREE.Vector3().crossVectors(restDir, up);  // horizontal, ⟂ arm
+      if (axis.lengthSq() < 1e-6) continue;
+      axis.normalize();
+      // World pre-rotation that tips the arm toward -Y (down).
+      const P = new THREE.Quaternion().setFromAxisAngle(axis, -MMD_ARM_ANGLE);
+      const pwq = a.parent ? a.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+      // Convert the world pre-rotation into the bone's local (parent) frame.
+      off[armBone] = pwq.clone().invert().multiply(P).multiply(pwq);
+    }
     return off;
   }
-  const MMD_REST_OFFSET = _restOffset();
 
   let mmd = null;          // active dance state, or null
   let mmdAudio = null;     // HTMLAudioElement for the dance track
@@ -685,7 +702,7 @@
       for (const [jp, vrmBone] of Object.entries(MMD_SIMPLE_MAP)) {
         if (!tracks[jp]) continue;
         const node = hb && hb.getNormalizedBoneNode(vrmBone);
-        if (node) simple.push({ jp, node, offset: MMD_REST_OFFSET[vrmBone] || null });
+        if (node) simple.push({ jp, node, vrmBone, offset: null });
       }
       const torso = {
         hips: hb && hb.getNormalizedBoneNode('hips'),
@@ -694,13 +711,20 @@
       };
       const hipsBase = torso.hips ? torso.hips.position.clone() : null;
 
-      // Capture leg rest geometry (in world space) for IK: the ankle target is
-      // the rest ankle + the animated IK offset, and the feet stay planted while
-      // the hips move. Reset to rest pose first so the capture is clean.
+      // Rest-pose capture: reset the measured bones to their true normalized
+      // (T-pose) rest — NOT the idle pose — so the arm/leg geometry is clean.
       let ik = null;
-      if (MMD_USE_IK && hb) {
-        applyRestPoseImmediate();
+      if (hb) {
+        const measure = ['leftUpperArm', 'leftLowerArm', 'rightUpperArm', 'rightLowerArm',
+          'leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'rightUpperLeg', 'rightLowerLeg', 'rightFoot',
+          'hips', 'spine', 'chest'];
+        for (const b of measure) { const n = hb.getNormalizedBoneNode(b); if (n) n.quaternion.identity(); }
+        if (torso.hips && hipsBase) torso.hips.position.copy(hipsBase);
         currentVrm.scene.updateMatrixWorld(true);
+        const armOffsets = _computeArmOffsets(hb);
+        for (const s of simple) if (armOffsets[s.vrmBone]) s.offset = armOffsets[s.vrmBone];
+      }
+      if (MMD_USE_IK && hb) {
         ik = { sceneQuat: currentVrm.scene.getWorldQuaternion(new THREE.Quaternion()) };
         for (const side of ['left', 'right']) {
           const cfg = MMD_IK[side];
