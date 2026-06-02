@@ -234,6 +234,7 @@
   let targetUrl = null;
   let mouthCurrent = 0;   // smoothed mouth-open value driven by TTS amplitude
   let mouthTarget = 0;
+  let lastVisemeAt = 0;   // perf.now() of the last real amplitude update
   let speaking = false;
   let currentEmotion = 'neutral';
   let boneNodes = {};     // cached humanoid bone nodes for posing
@@ -734,9 +735,18 @@
         // MMD fully drives bones + morphs (+ camera) while a dance plays.
         updateMmd();
       } else {
-        // Lip-sync: smoothly chase the amplitude target; decay when not speaking.
+        // Lip-sync: prefer real TTS amplitude; if none is arriving while she's
+        // speaking (e.g. an external player that can't report levels), fall back
+        // to a synthetic talking oscillation so the mouth still moves.
+        if (speaking) {
+          const freshAmplitude = (performance.now() - lastVisemeAt) < 350;
+          if (!freshAmplitude) {
+            mouthTarget = 0.18 + 0.55 * Math.abs(Math.sin(t * 9.5)) * (0.6 + 0.4 * Math.sin(t * 2.3));
+          }
+        } else {
+          mouthTarget *= 0.85;
+        }
         mouthCurrent += (mouthTarget - mouthCurrent) * Math.min(1, delta * 18);
-        if (!speaking) mouthTarget *= 0.85;
         if (em) {
           try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
         }
@@ -839,6 +849,7 @@
 
       if (payload.type === 'viseme') {
         mouthTarget = Math.max(0, Math.min(1, payload.mouth || 0));
+        lastVisemeAt = performance.now();
       }
 
       if (payload.type === 'speaking') {
