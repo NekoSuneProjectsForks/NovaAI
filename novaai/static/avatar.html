@@ -580,7 +580,7 @@
   function _lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
   const mmdCfg = {
     axis: parseInt(_lsGet('mmdAxis', (QUERY && QUERY.get('mmdaxis')) || '1'), 10) || 0,
-    ik: _lsGet('mmdIK', (QUERY && QUERY.get('ik')) || '1') !== '0',
+    ik: _lsGet('mmdIK', (QUERY && QUERY.get('ik')) || '0') !== '0',  // default OFF: pure-FK legs
     armDeg: parseFloat(_lsGet('mmdArm', (QUERY && QUERY.get('armangle')) || '35')) || 0,
     knee: parseFloat(_lsGet('mmdKnee', '1')) || 1,   // +1 knees forward, -1 backward
     zoom: parseFloat(_lsGet('mmdZoom', (QUERY && QUERY.get('mmdzoom')) || '1.35')) || 1.35,  // camera pull-back
