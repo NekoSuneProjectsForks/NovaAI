@@ -112,7 +112,7 @@ NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** �
 
 | Page | What It Does |
 |------|-------------|
-| 📊 **Dashboard** | Session controls, toggle voice/mic/hands-free, live status |
+| 📊 **Dashboard** | Session controls, toggle voice/mic/hands-free/web/media (all persist across restarts), live status |
 | 💬 **Chat** | Full conversation view with text + voice input |
 | 🔔 **Reminders** | Time-based reminders and recurring alarms |
 | 📅 **Calendar** | Events with date/time tracking |

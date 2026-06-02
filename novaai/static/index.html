@@ -220,6 +220,12 @@ tailwind.config = {
               <span class="text-[12px] font-medium text-nova-text truncate">Web</span>
               <span id="d-val-web" class="text-[11px] font-semibold text-emerald-400 ml-auto">ON</span>
             </button>
+            <!-- Media -->
+            <button onclick="doToggle('media')" class="flex items-center gap-2 px-4 py-2.5 hover:bg-nova-surface2 transition-colors flex-1 min-w-0">
+              <div id="d-dot-media" class="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></div>
+              <span class="text-[12px] font-medium text-nova-text truncate">Media</span>
+              <span id="d-val-media" class="text-[11px] font-semibold text-emerald-400 ml-auto">ON</span>
+            </button>
             <!-- Quick actions -->
             <div class="flex items-center gap-1.5 px-3 py-2 flex-shrink-0">
               <button id="d-btn-listen" onclick="doListen()" class="btn-secondary text-[11px] px-2.5 py-1.5 rounded-md font-medium" disabled>Listen</button>
@@ -844,6 +850,7 @@ function syncDashboard() {
   setToggleUI('hf',    s.hands_free,    'ON', 'OFF');
   setToggleMic(s.mic_muted);
   setToggleUI('web',   s.web_search,    'ON', 'OFF');
+  setToggleUI('media', s.media_enabled !== false, 'ON', 'OFF');
 
   // Listen + Stop buttons
   $('d-btn-listen').disabled = !s.session_started || s.busy || s.mic_muted;
@@ -1490,6 +1497,7 @@ async function doToggle(key) {
     if (key === 'handsfree')  await api().toggle_handsfree();
     if (key === 'mic')        await api().toggle_mic();
     if (key === 'web_search') await api().toggle_web_search();
+    if (key === 'media')      await api().toggle_media();
   } catch(e) { console.error(e); }
 }
 
