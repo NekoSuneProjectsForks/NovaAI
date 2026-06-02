@@ -571,18 +571,15 @@
   // Expressions MMD may drive — reset each frame so morphs never get stuck on.
   const MMD_RESET_EXPR = ['blink','blinkRight','aa','ih','ou','ee','oh','happy','angry','sad','neutral'];
 
-  // Rest-pose correction: MMD models rest in an A-pose (arms angled DOWN), but
-  // VRM normalized bones rest in a T-pose (arms straight out). VMD rotations are
-  // relative to MMD's rest, so without this the arms stay stuck out horizontally
-  // and elbows/hands follow wrong. We pre-rotate the shoulders/upper-arms down by
-  // the A-pose angle; children (lower arm, hand, fingers) inherit it. Tune
-  // MMD_ARM_ANGLE if arms sit too high/low. (~35° is typical for MMD.)
-  const MMD_ARM_ANGLE = (parseFloat((QUERY && QUERY.get('armangle')) || '35') || 35) * Math.PI / 180;
+  // Optional arm rest-pose correction. With the torso retarget in place, the raw
+  // VMD already poses the arms correctly on most VRMs, so this defaults to OFF.
+  // If a model's arms sit too high (stuck near a T-pose), nudge them down with
+  // ?armangle=35 (negative raises). Children (lower arm/hand/fingers) inherit it.
+  const MMD_ARM_ANGLE = (parseFloat((QUERY && QUERY.get('armangle')) || '0') || 0) * Math.PI / 180;
   function _restOffset() {
-    const Z = new THREE.Vector3(0, 0, 1);
     const off = {};
-    // Rotate the T-pose arms DOWN to MMD's A-pose rest. Left side rotates one way
-    // around Z, right the other (mirror). Sign tuned so arms drop, not raise.
+    if (!MMD_ARM_ANGLE) return off;   // no correction by default
+    const Z = new THREE.Vector3(0, 0, 1);
     off.leftUpperArm  = new THREE.Quaternion().setFromAxisAngle(Z,  MMD_ARM_ANGLE);
     off.rightUpperArm = new THREE.Quaternion().setFromAxisAngle(Z, -MMD_ARM_ANGLE);
     return off;
