@@ -27,8 +27,13 @@ except ImportError:  # pragma: no cover
 
 from .paths import AUDIO_DIR, AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
 
-# Generous cap for VRM uploads (they can be tens of MB).
-MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+# Upload cap for VRM models / MMD assets (high-res VRMs and big motion+audio
+# bundles can be hundreds of MB). Default 2 GB; override with NOVA_MAX_UPLOAD_MB.
+try:
+    MAX_UPLOAD_MB = max(1, int(os.getenv("NOVA_MAX_UPLOAD_MB", "2048")))
+except ValueError:
+    MAX_UPLOAD_MB = 2048
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 
 def _local_ip() -> str:
