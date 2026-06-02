@@ -100,7 +100,13 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
             parts = [p for p in unquote(path[len("/mmd/") :]).split("/") if p]
             if len(parts) == 2 and parts[0] in {"motion", "audio", "camera"}:
                 local_path = MMD_DIR / parts[0] / Path(parts[1]).name
-                self._serve_file(local_path, content_type="application/octet-stream")
+                # Audio needs a real media MIME type or the browser won't play it.
+                audio_types = {
+                    ".mp3": "audio/mpeg", ".wav": "audio/wav",
+                    ".ogg": "audio/ogg", ".m4a": "audio/mp4",
+                }
+                ctype = audio_types.get(local_path.suffix.lower(), "application/octet-stream")
+                self._serve_file(local_path, content_type=ctype)
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
             return

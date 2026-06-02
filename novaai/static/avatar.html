@@ -145,6 +145,7 @@
   </style>
 </head>
 <body>
+<button id="audioUnlock" style="display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 18px;border:none;border-radius:999px;background:#7c4dff;color:#fff;font-size:14px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4)">🔊 Click to enable dance audio</button>
 <header>
   <div>
     <h1>NovaAI VRM Portal</h1>
@@ -638,11 +639,13 @@
         } catch (e) { logMessage('MMD: camera load failed (ignored).'); }
       }
 
-      // Optional audio.
+      // Optional audio. Browsers block autoplay until the page gets a user
+      // gesture, so if play() is rejected we surface a one-click unlock button.
       if (payload.audio) {
         mmdAudio = new Audio(payload.audio);
         mmdAudio.loop = !!payload.loop;
-        mmdAudio.play().catch(() => logMessage('MMD: autoplay blocked — click the page once.'));
+        mmdAudio.crossOrigin = 'anonymous';
+        tryPlayMmdAudio();
       }
 
       mmd = { bones, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop };
@@ -654,8 +657,35 @@
     }
   }
 
+  let audioUnlocked = false;
+  const audioUnlockBtn = document.getElementById('audioUnlock');
+
+  function tryPlayMmdAudio() {
+    if (!mmdAudio) return;
+    const p = mmdAudio.play();
+    if (p && p.catch) {
+      p.then(() => { if (audioUnlockBtn) audioUnlockBtn.style.display = 'none'; })
+       .catch(() => {
+         // Autoplay blocked — show the unlock button so one click starts it.
+         logMessage('MMD: click "enable dance audio" (browser blocked autoplay).');
+         if (audioUnlockBtn) audioUnlockBtn.style.display = 'block';
+       });
+    }
+  }
+
+  // A single user gesture unlocks audio for the rest of the session.
+  function unlockAudio() {
+    audioUnlocked = true;
+    if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
+    if (mmdAudio) { try { mmdAudio.play(); } catch (e) {} }
+  }
+  if (audioUnlockBtn) audioUnlockBtn.addEventListener('click', unlockAudio);
+  window.addEventListener('pointerdown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
+  window.addEventListener('keydown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
+
   function stopMmd(restore = true) {
     if (mmdAudio) { try { mmdAudio.pause(); } catch (e) {} mmdAudio = null; }
+    if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
     if (!mmd) return;
     // Restore bone base positions we moved (hips).
     mmd.bones.forEach((tr, node) => { if (tr.isHips) node.position.copy(tr.base); });
