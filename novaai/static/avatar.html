@@ -182,7 +182,8 @@
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
       "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
-      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js",
+      "mmd-parser": "https://cdn.jsdelivr.net/npm/mmd-parser@1.0.4/+esm"
     }
   }
 </script>
@@ -190,7 +191,7 @@
   import * as THREE from 'three';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   import { VRMLoaderPlugin } from '@pixiv/three-vrm';
-  import * as MMDParser from 'three/addons/libs/mmdparser.module.js';
+  import * as MMDParser from 'mmd-parser';
 
   const statusEl = document.getElementById('status');
   const dropZone = document.getElementById('dropZone');
