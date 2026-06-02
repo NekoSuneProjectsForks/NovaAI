@@ -560,6 +560,23 @@
   // Expressions MMD may drive — reset each frame so morphs never get stuck on.
   const MMD_RESET_EXPR = ['blink','blinkRight','aa','ih','ou','ee','oh','happy','angry','sad','neutral'];
 
+  // Rest-pose correction: MMD models rest in an A-pose (arms angled DOWN), but
+  // VRM normalized bones rest in a T-pose (arms straight out). VMD rotations are
+  // relative to MMD's rest, so without this the arms stay stuck out horizontally
+  // and elbows/hands follow wrong. We pre-rotate the shoulders/upper-arms down by
+  // the A-pose angle; children (lower arm, hand, fingers) inherit it. Tune
+  // MMD_ARM_ANGLE if arms sit too high/low. (~35° is typical for MMD.)
+  const MMD_ARM_ANGLE = 0.61;   // radians (~35°)
+  function _restOffset() {
+    const Z = new THREE.Vector3(0, 0, 1);
+    const off = {};
+    // Left side rotates one way around Z, right side the other (mirror).
+    off.leftUpperArm  = new THREE.Quaternion().setFromAxisAngle(Z, -MMD_ARM_ANGLE);
+    off.rightUpperArm = new THREE.Quaternion().setFromAxisAngle(Z,  MMD_ARM_ANGLE);
+    return off;
+  }
+  const MMD_REST_OFFSET = _restOffset();
+
   let mmd = null;          // active dance state, or null
   let mmdAudio = null;     // HTMLAudioElement for the dance track
 
@@ -609,7 +626,12 @@
           const t = m.frameNum / MMD_FPS; maxT = Math.max(maxT, t);
           return { t, q: _convQuat(m.rotation), p: _convPos(m.position) };
         });
-        bones.set(node, { keys, isHips: vrmBone === 'hips', base: node.position.clone() });
+        bones.set(node, {
+          keys,
+          isHips: vrmBone === 'hips',
+          base: node.position.clone(),
+          offset: MMD_REST_OFFSET[vrmBone] || null,   // A-pose→T-pose correction
+        });
       }
 
       // Morphs -> per-expression sorted keyframes.
@@ -709,7 +731,11 @@
     // Bones.
     mmd.bones.forEach((tr, node) => {
       const r = _sample(tr.keys, t, 'quat');
-      if (r && r.q) node.quaternion.copy(r.q);
+      if (r && r.q) {
+        // Apply the rest-pose offset (A-pose→T-pose) before the animation.
+        if (tr.offset) node.quaternion.copy(tr.offset).multiply(r.q);
+        else node.quaternion.copy(r.q);
+      }
       if (tr.isHips) {
         const pr = _sample(tr.keys, t, 'pos');
         if (pr && pr.p) node.position.copy(tr.base).add(pr.p);
