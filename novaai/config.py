@@ -174,6 +174,21 @@ def normalize_twitch_reply_mode(value: str) -> str:
     return "mention"
 
 
+def normalize_twitch_allowed_roles(value: str | None) -> str:
+    """Who NovaAI is allowed to reply to in Twitch chat.
+
+    everyone     -> anyone
+    subscribers  -> subscribers, VIPs, mods, and the broadcaster
+    moderators   -> mods and the broadcaster only
+    """
+    normalized = (value or "").strip().lower()
+    if normalized in {"subscribers", "subscriber", "subs", "sub", "subsonly", "subs_only"}:
+        return "subscribers"
+    if normalized in {"moderators", "moderator", "mods", "mod", "modsonly", "mods_only"}:
+        return "moderators"
+    return "everyone"
+
+
 def normalize_rag_embedding_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
@@ -256,6 +271,7 @@ class Config:
     llm_api_key: str | None
     llm_keep_alive: str
     llm_num_predict: int
+    llm_num_ctx: int
     llm_cli_command: str | None
     claude_cli_path: str | None
     codex_cli_path: str | None
@@ -313,7 +329,10 @@ class Config:
     twitch_bot_username: str
     twitch_oauth_token: str | None
     twitch_reply_mode: str
+    twitch_allowed_roles: str
     twitch_reply_cooldown_seconds: float
+    streamlabs_socket_token: str | None
+    streamelements_jwt_token: str | None
     # RAG memory
     rag_enabled: bool
     rag_embedding_provider: str
@@ -407,6 +426,17 @@ class Config:
             performance_profile.ollama_num_predict
             if performance_profile is not None
             else max(48, int(os.getenv("OLLAMA_NUM_PREDICT", "1200")))
+        )
+        # Context window sent to Ollama. 0 = leave it to Ollama's default.
+        # Set this (e.g. 4096) when a backend GPU is small: long-context models
+        # like dolphin3/llama3.2 advertise a 128K window, and Ollama sizes its
+        # memory estimate for the *full* window, which makes it refuse to load
+        # on modest GPUs ("requires NN GiB"). Capping num_ctx fixes that.
+        llm_num_ctx = max(
+            0,
+            int(
+                os.getenv("OLLAMA_NUM_CTX", os.getenv("LLM_NUM_CTX", "0"))
+            ),
         )
         xtts_stream_chunk_size = (
             performance_profile.xtts_stream_chunk_size
@@ -527,6 +557,7 @@ class Config:
                 or os.getenv("OLLAMA_KEEP_ALIVE", "30m")
             ),
             llm_num_predict=llm_num_predict,
+            llm_num_ctx=llm_num_ctx,
             llm_cli_command=parse_optional_str_env("LLM_CLI_COMMAND"),
             claude_cli_path=parse_optional_str_env("CLAUDE_CLI_PATH"),
             codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),
@@ -623,9 +654,14 @@ class Config:
             twitch_reply_mode=normalize_twitch_reply_mode(
                 os.getenv("TWITCH_REPLY_MODE", "mention")
             ),
+            twitch_allowed_roles=normalize_twitch_allowed_roles(
+                os.getenv("TWITCH_ALLOWED_ROLES", "everyone")
+            ),
             twitch_reply_cooldown_seconds=max(
                 0.0, float(os.getenv("TWITCH_REPLY_COOLDOWN", "8"))
             ),
+            streamlabs_socket_token=parse_optional_str_env("STREAMLABS_SOCKET_TOKEN"),
+            streamelements_jwt_token=parse_optional_str_env("STREAMELEMENTS_JWT_TOKEN"),
             rag_enabled=parse_bool_env("RAG_ENABLED", True),
             rag_embedding_provider=normalize_rag_embedding_provider(
                 os.getenv("RAG_EMBEDDING_PROVIDER", "local")

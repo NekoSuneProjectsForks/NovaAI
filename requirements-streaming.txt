@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NovaAI — OPTIONAL streaming-alert sources (Streamlabs / StreamElements).
+#
+# Only needed if you want NovaAI to connect DIRECTLY to Streamlabs or
+# StreamElements over their Socket.IO APIs for live donation/follow/sub/raid
+# alerts. Without this, the generic webhook (/webhook/stream) and the in-app
+# alert simulator still work — so Twitch EventSub forwarders, Tangia, sound
+# alerts, or any bot can drive NovaAI's reactions without these packages.
+#
+#   pip install -r requirements-streaming.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+python-socketio[client]>=5,<6
+websocket-client>=1.6,<2

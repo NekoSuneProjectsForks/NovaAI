@@ -25,16 +25,18 @@ Think Alexa, but with *attitude* and zero cloud lock-in. 🔥
 | 🎙️ | **Voice Input** | Local `faster-whisper` STT — no audio leaves your machine |
 | 🔊 | **Voice Output** | XTTS-v2 streamed synthesis with cloned voices (or Google TTS lite) |
 | 💜 | **Twitch Chat** | Reads your stream chat and replies in-character — Neuro-sama style |
+| 🎉 | **Stream Alerts & Tips** | Reacts to donations/follows/subs/raids with an expression + cute message, and a tips ("stockings") OBS overlay |
 | 🧬 | **Memory / Learning** | RAG long-term memory — remembers facts across sessions and gets better |
-| 🧍 | **VRM Avatar** | 3D avatar that lip-syncs, emotes, idles, and dances — OBS-ready |
+| 🧍 | **VRM Avatar** | 3D avatar that lip-syncs, emotes (20+), idles, dances, and plays **MMD** motions — OBS-ready |
 | 🎮 | **Game Playing** | Autonomously plays Minecraft (Mineflayer) + a universal vision driver |
 | 🎤 | **Singing** | Sings songs in its own voice over an auto-found YouTube instrumental |
 | 🌐 | **Web Search** | Manual or auto-triggered lookups via SearXNG / DuckDuckGo |
 | 🎵 | **Music & Radio** | SoundCloud search, internet radio, in-app playback |
 | ⏰ | **Reminders & Alarms** | Natural language: *"remind me to call mum at 3pm"* |
+| 🕐 | **Date & Time** | Answers *"what time/day/date is it"* instantly (no LLM round-trip) |
 | 📋 | **To-Do & Shopping** | Checkbox lists that sync across voice and GUI |
 | 📅 | **Calendar** | Track events with dates and times |
-| 👤 | **Profiles** | Multiple companion personalities — create, clone, switch |
+| 👤 | **Profiles** | Multiple companion personalities — create, clone, switch, import/export, delete |
 | ⚡ | **Auto-Tune** | Detects your hardware, adjusts models and GPU usage |
 | 🔄 | **Self-Update** | Checks GitHub for new versions on startup |
 | 🗄️ | **SQLite Storage** | Everything in one clean database — no scattered JSON |
@@ -65,17 +67,42 @@ curl -fsSL https://raw.githubusercontent.com/cachenetworks/NovaAI/main/install.s
 python setup.py          # or python3 on Linux
 ```
 
-First run does the full setup, then launches the GUI. Subsequent runs skip straight to launch.
+First run does the full setup, then launches the GUI (or the browser web UI on a
+headless machine). Subsequent runs skip straight to launch.
 
 ### 📋 All commands
 
 ```bash
-python setup.py              # Setup (if needed) + launch GUI
-python setup.py --launch     # 🖥️ Launch GUI
+python setup.py              # Setup (if needed) + launch (GUI, or web UI if headless)
+python setup.py --launch     # 🖥️ Launch desktop GUI
+python setup.py --web        # 🌐 Launch headless browser web UI (great for a Pi/server)
 python setup.py --terminal   # ⌨️ Terminal mode
 python setup.py --setup      # 🔧 Re-run setup only
 python setup.py --update     # 🔄 Check for updates
+
+python app.py --web          # 🌐 Same web UI, started directly (0.0.0.0:8800)
 ```
+
+---
+
+## 🌐 Network Access (web mode)
+
+In **`--web`** mode NovaAI is meant to be reached from other devices, so the web UI **and** its sibling services bind to **all interfaces** — reachable over your LAN, **Tailscale**, a reverse proxy, or a Cloudflare tunnel:
+
+| Service | Port | Notes |
+|---------|------|-------|
+| 🖥️ Web dashboard | `8800` | `NOVA_WEB_HOST` / `NOVA_WEB_PORT` |
+| 🧍 Avatar overlay (HTTP + WebSocket) | `8766` / `8765` | for OBS / browser overlays |
+| 🎮 Minecraft Live View | `8768` | 3D world + inventory + thoughts |
+
+Just open the dashboard at e.g. `http://192.168.1.107:8800/` (or your Tailscale IP). When you open the **Avatar** window or **Live View**, NovaAI opens a **new browser tab on the same host you're using** (`192.168.1.107:8766`, `:8768`, …) — it never launches a browser on the Pi itself.
+
+- 🎬 **OBS Browser Sources:** add the **avatar** at `http://<host>:8766/?transparent=1` (transparent — shows *only* the avatar) and the **tips overlay** at `http://<host>:8800/overlay/earnings`.
+- 🖥️ The **desktop GUI** (`--gui`) is a local app, so these services stay bound to **`127.0.0.1`** (localhost only).
+- 🔒 To restrict a service in web mode, set its host: `NOVA_BIND_HOST` (all services), or per-service `NOVA_AVATAR_HOST` / `MC_VIEWER_HOST` (e.g. `127.0.0.1`).
+- ☁️ **Cloudflare tunnel:** the tab uses whatever host you browsed from, with the service port appended — expose those ports on that hostname in your tunnel config.
+
+> ⚠️ These services have **no authentication**, so binding to all interfaces exposes them to everyone on your LAN / tailnet. That's usually fine on a trusted network; lock them down with the host overrides above if not.
 
 ---
 
@@ -91,11 +118,12 @@ NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** �
 | 📅 **Calendar** | Events with date/time tracking |
 | 🛒 **Shopping** | Checkbox shopping list |
 | ✅ **To-Do** | Task list with done/delete |
-| 💜 **Stream** | Connect Twitch chat, watch the live feed, set the reply mode |
+| 💜 **Stream** | Connect Twitch chat, watch the live feed, set the reply mode + who can talk (everyone / subscribers / moderators) |
 | 🧍 **Avatar** | Upload a VRM, open the OBS window, test emotions, toggle lip-sync |
+| 💃 **MMD** | Add dances (motion + song + camera bundled per row), play on the avatar, delete |
 | 🎮 **Game** | Pick a driver (Minecraft/universal/etc.), set a goal, watch the live view |
 | 🎤 **Sing** | Type a song, attach/auto-find a backing track, replay saved songs |
-| 👤 **Profiles** | Create, clone, switch, or delete personalities |
+| 👤 **Profiles** | Create, clone, switch, delete, or import/export personalities |
 | ⚙️ **Settings** | Audio devices, web search, LLM/TTS/STT config |
 
 > 💡 **Pro tip:** Voice replies, hands-free mode, and mic mute can all be toggled *before* starting a session. Configure everything first, then hit Start.
@@ -111,8 +139,24 @@ NovaAI can do far more than chat — it can stream, learn, embody a 3D avatar, p
 Reads your channel's chat and replies **in-character**, just like Neuro-sama. Works anonymously (read-only) or, with a bot token, posts replies straight back into chat.
 
 - Reply policy: **mention** (answer when named), **command** (only `!ask ...`), or **all** (answer everything) — with a cooldown so it never spams or swamps the GPU
+- **Who can talk to NovaAI**: `everyone`, `subscribers` (subs/VIPs/mods/broadcaster), or `moderators` (mods/broadcaster) — all chat still shows in the feed
 - Live chat feed + connection status on the **Stream** page; replies also speak aloud (OBS-capturable) and lip-sync the avatar
 - Set it up with `TWITCH_ENABLED`, `TWITCH_CHANNEL`, and (optional) `TWITCH_BOT_USERNAME` + `TWITCH_OAUTH_TOKEN`
+
+### 🎉 Stream Alerts & Tips ("Stockings")
+
+NovaAI reacts to **donations, follows, subs, resubs, gift subs, cheers, raids, and hosts** with an avatar expression + a cute, **profile-flavored** spoken message — then tallies the money on a tips overlay.
+
+- **Sources**: Streamlabs & StreamElements (enter the tokens in **Settings → Stream Alerts** or via `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN`, plus `pip install -r requirements-streaming.txt`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
+  ```bash
+  curl -X POST "http://<host>:8800/webhook/stream?source=webhook" \
+       -H "Content-Type: application/json" \
+       -d '{"type":"donation","user":"Alice","amount":5,"currency":"USD"}'
+  ```
+  (Set `NOVA_WEBHOOK_SECRET` to require an `X-Nova-Secret` header / `?secret=`.)
+- **Reactions** are editable per profile (`profile_details.alerts`): a cute message + expression per event type. Placeholders: `{user} {amount} {currency} {months} {tier} {viewers} {message}`.
+- **Tips overlay** ("stockings"): an OBS-ready transparent page at **`/overlay/earnings`** showing all-time / today / session totals (try `?show=today`, `?title=Goal&goal=500`). Bits convert at 100 = ~$1.
+- **Test** any reaction without a live event from the **Stream** page buttons.
 
 ### 🧬 Memory / Learning (RAG)
 
@@ -127,9 +171,23 @@ NovaAI **remembers across sessions** using retrieval-augmented memory — not fi
 A real 3D avatar (three-vrm) that **lip-syncs to the voice**, changes expression with the mood, breathes/blinks on idle, and even dances.
 
 - Upload any **`.vrm`** model from the **Avatar** page
-- Drives expressions (happy/sad/angry/relaxed) + visemes from live TTS amplitude
+- **20+ expressions** with matching body language — happy, excited, laugh, proud, smug, **blush, shy, love, flirty, wink**, sad, cry, pout, angry, anxious, scared, surprised, shocked, confused, relaxed, calm, sleepy, and **sleeping** (lies down with eyes closed) — plus visemes driven from live TTS amplitude
+- Custom expressions like **blush / wink / love** use the model's own blendshapes when present, and gracefully fall back to a matching preset + pose otherwise
+- Expressions are auto-picked from the mood of each reply, or test them from the **Avatar** page buttons
 - **OBS-ready**: open the transparent browser window as a Browser Source for streaming
 - Shared lip-sync seam means chat, Twitch replies, game narration, and singing **all** animate it
+
+### 💃 MMD Dances
+
+Play **MMD (`.vmd`) dance motions on your VRM avatar** — with optional audio and an optional camera motion.
+
+- **Add a dance** from the dedicated **MMD** page (sidebar): each dance is one bundle — a `.vmd` **motion** (required) + an optional **song** (`.mp3`/`.wav`/`.ogg`/`.m4a`) + an optional `.vmd` **camera**, uploaded together and shown as a single row with **Play** and **Delete**. Saved under `data/mmd/sets/`.
+- Pick motion + audio + camera, hit **Play Dance** (with optional **Loop**) and it retargets the MMD motion onto the VRM humanoid, syncs the audio, and (if provided) drives the camera. **Stop** returns to idle.
+- Works in the OBS overlay too (`?transparent=1`).
+
+> ⚙️ MMD→VRM retargeting is best-effort (unlike native MMD players such as [web-mmd](https://github.com/culdo/web-mmd), which drive real PMX rigs). The torso/upper body, head, and hands track well. Open the **non-transparent** overlay (`http://<host>:8766/`) to get a live **MMD body tuning** panel — flip the facing/axis (0–3), knee bend, leg-IK, and arm-down amount and watch the dance fix itself; the choice saves automatically.
+
+> 🐞 **Known bug — leg tracking (MMD on VRM):** the **legs don't track reliably yet**. MMD dances move the legs through foot **IK target** bones (足ＩＫ) rather than direct leg rotations, and reproducing that on a VRM skeleton (whose leg rig/rest pose differs from MMD) still needs work — the correct source/approach for the leg solve is unresolved. **Body, torso, head, arms and hands are trackable**; legs/feet may look stiff, slide, or bend oddly. Toggle **Leg IK off** in the tuning panel to fall back to raw leg motion. Help/PRs welcome (see [SystemAnimatorOnline](https://github.com/ButzYung/SystemAnimatorOnline) for a reference VMD-on-VRM implementation).
 
 ### 🎮 Game Playing
 
@@ -230,6 +288,16 @@ Each companion profile is deeply customisable. Go wild:
 
 Want a sarcastic best friend? A patient tutor? A no-nonsense project manager? Just create a new profile and dial the sliders. 🎛️
 
+### 📤 Import / Export
+
+Move a profile between machines (e.g. your **PC → Raspberry Pi**) from the **Profiles** page:
+
+- **Export** — click **Export** on any profile to download a `*.nova-profile.json` file (saved to the device you're browsing from).
+- **Import** — click **Import**, pick a `*.nova-profile.json` file, and it's added as a **new** profile (importing never overwrites an existing one).
+- **Delete** — remove any non-active profile with **Delete** (you always keep at least one).
+
+> 💡 The export file carries the whole profile — identity, sliders, memory notes, voice, and all feature data — so the imported copy behaves exactly like the original.
+
 ---
 
 ## 🗄️ Data Storage
@@ -237,8 +305,10 @@ Want a sarcastic best friend? A patient tutor? A no-nonsense project manager? Ju
 All runtime data lives in a single **SQLite database** at `data/novaai.db`:
 
 - 💬 Chat history
-- 👤 Profiles and all their feature data (reminders, todos, shopping, calendar, alarms)
-- ⚙️ App state (active profile, settings)
+- 👤 Profiles and all their feature data (reminders, todos, shopping, calendar, alarms, alert messages)
+- ⚙️ App state (active profile, settings, tips/earnings totals)
+
+Binary assets live on disk: VRM models in `data/avatars/`, MMD dances in `data/mmd/`.
 
 > 📦 On first run, existing JSON files (`profiles.json`, `history.jsonl`) are **automatically migrated** into the database. No manual steps needed.
 
@@ -270,6 +340,7 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `LLM_API_KEY` | *(none)* | API key for cloud providers (OpenAI, OpenRouter, etc.) |
 | `OLLAMA_SKIP_LOCAL_SETUP` | `false` | Set `true` when using an existing Ollama server endpoint instead of local install/start |
 | `LLM_NUM_PREDICT` | `1200` | Reply token budget |
+| `OLLAMA_NUM_CTX` | `0` | Context window sent to Ollama (`0` = Ollama default). Cap it (e.g. `4096`) so long-context models load on small GPUs |
 | `LLM_TEMPERATURE` | `0.95` | Response creativity |
 
 ### 🌐 Web Search
@@ -326,7 +397,16 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `TWITCH_BOT_USERNAME` | *(none)* | Bot account name (blank = anonymous read-only) |
 | `TWITCH_OAUTH_TOKEN` | *(none)* | `oauth:...` token so it can post replies |
 | `TWITCH_REPLY_MODE` | `mention` | `mention`, `command` (`!ask`), or `all` |
+| `TWITCH_ALLOWED_ROLES` | `everyone` | Who NovaAI replies to: `everyone`, `subscribers` (subs/VIPs/mods/broadcaster), or `moderators` (mods/broadcaster). All chat still shows in the feed. |
 | `TWITCH_REPLY_COOLDOWN` | `8` | Seconds between replies |
+
+### 🎉 Stream Alerts
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `STREAMLABS_SOCKET_TOKEN` | *(none)* | Streamlabs socket API token for live alerts (needs `requirements-streaming.txt`) |
+| `STREAMELEMENTS_JWT_TOKEN` | *(none)* | StreamElements JWT for live alerts (needs `requirements-streaming.txt`) |
+| `NOVA_WEBHOOK_SECRET` | *(none)* | If set, `/webhook/stream` requires `X-Nova-Secret` header or `?secret=` |
 
 ### 🧬 RAG Memory
 
@@ -346,7 +426,17 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `MC_HOST` / `MC_PORT` | `127.0.0.1` / `25565` | Minecraft server address |
 | `MC_USERNAME` / `MC_AUTH` | `NovaAI` / `offline` | Bot name + `offline` or `microsoft` auth |
 | `MC_VIEWER_PORT` | `8768` | Live View dashboard port (3D + inventory) |
+| `MC_VIEWER_HOST` | *(follows mode)* | Live View bind host — all interfaces in web mode, `127.0.0.1` in GUI |
 | `VISION_MODEL` | *(none)* | Multimodal model for the universal driver |
+
+### 🌐 Networking
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `NOVA_WEB_HOST` / `NOVA_WEB_PORT` | `0.0.0.0` / `8800` | Web dashboard bind host + port |
+| `NOVA_BIND_HOST` | *(follows mode)* | Bind host for sibling services (avatar, Live View). Web mode → `0.0.0.0`, GUI → `127.0.0.1` |
+| `NOVA_AVATAR_HOST` | *(follows `NOVA_BIND_HOST`)* | Avatar HTTP/WebSocket bind host override |
+| `MC_VIEWER_HOST` | *(follows `NOVA_BIND_HOST`)* | Minecraft Live View bind host override |
 
 ### 🎤 Singing
 
@@ -368,7 +458,10 @@ NovaAI/
 ├── setup.py                  # 🔧 Setup, launch, and update — all in one
 ├── install.ps1               # ⚡ One-line PowerShell installer (Windows)
 ├── install.sh                # 🐧 One-line bash installer (Linux)
-├── requirements.txt          # 📦 Python dependencies
+├── requirements.txt          # 📦 Python dependencies (base)
+├── requirements-voice.txt    # 🎙️ Optional: mic/STT/TTS/embeddings
+├── requirements-gui.txt      # 🖥️ Optional: native pywebview desktop window
+├── requirements-streaming.txt# 🎉 Optional: Streamlabs/StreamElements live alerts
 ├── VERSION                   # 🏷️ Current version
 ├── .env.example              # ⚙️ Configuration template
 │
@@ -376,25 +469,30 @@ NovaAI/
 │   ├── logo.png              # 🎨 NovaAI logo
 │   ├── logo.ico              # 🎨 Window icon
 │   ├── novaai.db             # 🗄️ SQLite database (runtime)
+│   ├── avatars/              # 🧍 Uploaded VRM models
+│   ├── mmd/                  # 💃 MMD assets (motion/ audio/ camera/)
 │   └── profile.example.json  # 📝 Example profile
 │
 └── novaai/
-    ├── launcher.py           # 🚪 CLI vs GUI routing + auto-update
-    ├── webgui.py             # 🖥️ pywebview desktop GUI backend
+    ├── launcher.py           # 🚪 CLI vs GUI vs web routing + auto-update
+    ├── webgui.py             # 🖥️ Backend API (shared by desktop GUI + web)
+    ├── webserver.py          # 🌐 Headless web UI server (--web) + webhook
     ├── cli.py                # ⌨️ Terminal chat loop + commands
     ├── chat.py               # 🧠 System prompt + LLM requests
-    ├── engine.py             # 🧩 Shared reply-generation seam (chat/twitch/game)
-    ├── twitch.py             # 💜 Twitch IRC chat client + responder
+    ├── engine.py             # 🧩 Shared reply seam + emotion detection
+    ├── twitch.py             # 💜 Twitch IRC chat client (+ role parsing)
+    ├── stream_events.py      # 🎉 Unified stream-event model + reactions
+    ├── stream_sources.py     # 🔌 Streamlabs/StreamElements socket clients
     ├── memory.py             # 🧬 RAG long-term memory store
-    ├── avatar.py             # 🧍 VRM avatar bridge (WebSocket + OBS window)
+    ├── avatar.py             # 🧍 VRM avatar bridge (WebSocket + HTTP + MMD)
     ├── singing.py            # 🎤 Singing engine (XTTS/gTTS + backing merge)
     ├── games/                # 🎮 Game agent + drivers (minecraft/universal/…)
     ├── config.py             # ⚙️ Environment parsing + runtime config
     ├── database.py           # 🗄️ SQLite schema + CRUD operations
     ├── storage.py            # 💾 Profile/history API (SQLite-backed)
-    ├── features.py           # ⏰ Reminders, alarms, todos, shopping, calendar
+    ├── features.py           # ⏰ Date/time, reminders, alarms, todos, shopping, calendar
     ├── audio_input.py        # 🎙️ Mic capture + faster-whisper STT
-    ├── tts.py                # 🔊 XTTS-v2 / gTTS synthesis + playback
+    ├── tts.py                # 🔊 XTTS-v2 / gTTS synthesis + playback + lip-sync
     ├── media.py              # 🎵 Radio + music platform integration
     ├── media_player.py       # ▶️ In-app audio playback (ffplay)
     ├── performance.py        # ⚡ Hardware detection + auto-tuning
@@ -404,8 +502,9 @@ NovaAI/
     ├── models.py             # 📦 Shared dataclasses
     ├── paths.py              # 📍 Path constants
     └── static/
-        ├── index.html        # 🎨 Tailwind CSS frontend
-        └── avatar.html       # 🧍 three-vrm avatar renderer (OBS source)
+        ├── index.html        # 🎨 Tailwind CSS frontend (dashboard)
+        ├── avatar.html       # 🧍 three-vrm avatar renderer + MMD (OBS source)
+        └── earnings.html     # 🎉 Tips ("stockings") overlay (OBS source)
 
 node/
 └── minecraft-bridge/         # 🎮 Mineflayer Node bridge (modular lib/)
@@ -579,23 +678,66 @@ PRs welcome! If you're not sure where to start, open an issue and we'll point yo
 
 ---
 
-## 🐧 Linux Support
+## 🐧 Linux & Raspberry Pi Support
 
-> NovaAI runs on both **Windows** and **Linux**. Here's the compatibility status:
+> NovaAI runs on **Windows**, **amd64 Linux**, and **ARM64 / Raspberry Pi 5**.
+
+### Install profiles
+
+Voice and the native desktop GUI are now **optional add-ons**, so a headless box
+installs only what it needs. `install.sh` asks which profile you want; you can also
+pick manually:
+
+| Profile | Installs | Good for |
+|---|---|---|
+| **Minimal** | `requirements.txt` | Text chat + **browser web UI**. Smallest, ARM-friendly. Recommended for a Pi. |
+| **+ Voice** | `+ requirements-voice.txt` | Mic, speech-to-text, XTTS/gTTS, embeddings, singing (large; needs a mic/speakers). |
+| **+ Desktop GUI** | `+ requirements-gui.txt` | The native pywebview window (needs a display). |
+| **Everything** | all three | A full desktop machine. |
+
+```bash
+pip install -r requirements.txt                          # minimal (text + web UI)
+pip install -r requirements.txt -r requirements-voice.txt # add voice/ML
+pip install -r requirements.txt -r requirements-gui.txt   # add the desktop GUI
+```
+
+> The desktop GUI's CEF backend is Windows-only; on Linux/ARM `requirements-gui.txt`
+> uses your system WebView instead (`gir1.2-webkit2-4.1` on Debian/Ubuntu).
+
+### 🍓 Raspberry Pi 5 / headless quick-start
+
+A Pi (or any server) usually has no monitor, mic, or speakers — so run the **browser
+web UI** and reach Nova from another device:
+
+```bash
+git clone https://github.com/cachenetworks/NovaAI && cd NovaAI
+python3 setup.py --setup        # choose the "Minimal" profile when asked
+sudo apt install ffmpeg         # optional, for audio playback later
+python3 app.py --web            # serves the UI on 0.0.0.0:8800
+```
+
+Then open `http://<pi-ip>:8800` in any browser on your network. Prefer the terminal?
+`python3 app.py` gives you the same companion as a text chat over SSH.
+
+- Host/port are configurable: `NOVA_WEB_HOST` / `NOVA_WEB_PORT` (default `0.0.0.0:8800`).
+- On a box with no audio hardware, keep `VOICE_ENABLED=false` (the default) and set
+  `INPUT_MODE=text` in `.env` so the terminal mode never reaches for a microphone.
+- Voice can be added later — `pip install -r requirements-voice.txt` — once you attach
+  a mic/speakers. XTTS runs on CPU there, so expect it to be slow.
 
 ### ✅ Done
 
-- [x] **`setup.py`** — Cross-platform venv paths, subprocess flags, Ollama detection
-- [x] **`novaai/tts.py`** — Linux audio playback via ffplay, ALSA/PulseAudio/PipeWire/JACK host API support
-- [x] **`novaai/updater.py`** — Git detection works on both platforms
-- [x] **`novaai/launcher.py`** — Platform-aware setup call
-- [x] **`install.sh`** — Full Linux installer (Python, LLM provider, Ollama, CUDA, desktop launcher)
-- [x] README updated with Linux install instructions
+- [x] **Minimal install runs without torch/coqui/PortAudio** — voice/ML imports are lazy
+- [x] **`python app.py --web`** — headless browser UI (no display/pywebview needed)
+- [x] **ARM64 / Raspberry Pi 5** — `pip install` no longer pulls Windows-only `cefpython3`
+- [x] **`install.sh`** — arch/distro-aware system deps, install-profile prompt, headless detection
+- [x] **`novaai/tts.py`** — Linux audio playback via ffplay, ALSA/PulseAudio/PipeWire/JACK support
 
 ### 🗺️ Roadmap
 
+- [ ] **Fix MMD leg tracking on VRM** (foot-IK retarget) — body/arms/hands already track; legs are the open problem
+- [ ] systemd service / auto-start on boot for the web UI
 - [ ] Test on more distros (Fedora, Arch, NixOS)
-- [ ] Wayland-specific pywebview testing
 - [ ] macOS support
 
 ---

@@ -2,10 +2,22 @@
 // Single public site on VIEWER_PORT: dashboard + proxied 3D viewer (/world) +
 // proxied inventory viewer, so the whole live view is one URL.
 const http = require('http');
+const os = require('os');
 const { CFG } = require('./config');
 const { state, log } = require('./state');
 const { feedData } = require('./helpers');
 const { viewDashboardHtml } = require('./dashboard');
+
+// Best-effort LAN IPv4 so the logged URL is reachable when bound to 0.0.0.0.
+function localIp() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const ni of ifaces[name] || []) {
+      if (ni.family === 'IPv4' && !ni.internal) return ni.address;
+    }
+  }
+  return '127.0.0.1';
+}
 
 function sendJson(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -123,9 +135,10 @@ function startPublicSite() {
     else proxy.ws(req, socket, head, { target: invTarget });
   });
   site.on('error', (e) => log('live site error: ' + ((e && e.message) || e)));
-  site.listen(CFG.viewerPort, '127.0.0.1', () => {
+  site.listen(CFG.viewerPort, CFG.viewerHost, () => {
     state.publicStarted = true;
-    log(`live view (one port): http://127.0.0.1:${CFG.viewerPort}  [3D ${viewerOk ? 'on' : 'off'}, inventory ${invOk ? 'on' : 'off'}]`);
+    const shownHost = (CFG.viewerHost === '0.0.0.0' || CFG.viewerHost === '::') ? localIp() : CFG.viewerHost;
+    log(`live view (one port): http://${shownHost}:${CFG.viewerPort}  [3D ${viewerOk ? 'on' : 'off'}, inventory ${invOk ? 'on' : 'off'}]`);
   });
 }
 

@@ -28,6 +28,33 @@ _PRIVMSG_RE = re.compile(
 )
 
 
+def parse_tags(tags: str | None) -> dict[str, str]:
+    """Parse an IRCv3 tag string (``key=val;key=val``) into a dict."""
+    out: dict[str, str] = {}
+    for part in (tags or "").split(";"):
+        if "=" in part:
+            key, _, val = part.partition("=")
+            out[key] = val
+    return out
+
+
+def roles_from_tags(tags: str | None) -> set[str]:
+    """Extract chatter roles from message tags (badges + mod/subscriber flags)."""
+    t = parse_tags(tags)
+    roles: set[str] = set()
+    badges = t.get("badges", "")
+    badge_names = {b.split("/", 1)[0] for b in badges.split(",") if b}
+    if "broadcaster" in badge_names:
+        roles.add("broadcaster")
+    if t.get("mod") == "1" or "moderator" in badge_names:
+        roles.add("moderator")
+    if t.get("subscriber") == "1" or badge_names & {"subscriber", "founder"}:
+        roles.add("subscriber")
+    if "vip" in badge_names:
+        roles.add("vip")
+    return roles
+
+
 def normalize_oauth(token: str) -> str:
     """Return a token in Twitch's ``oauth:xxxx`` form, tolerating common pastes."""
     t = (token or "").strip().strip('"').strip("'")
@@ -44,7 +71,7 @@ class TwitchClient:
     def __init__(
         self,
         channel: str,
-        on_message: Callable[[str, str], None],
+        on_message: Callable[[str, str, set[str]], None],
         bot_username: str | None = None,
         oauth_token: str | None = None,
         on_status: Callable[[str], None] | None = None,
@@ -219,8 +246,9 @@ class TwitchClient:
             return
         nick = match.group("nick")
         message = match.group("msg").strip()
+        roles = roles_from_tags(match.group("tags"))
         if nick and message:
             try:
-                self.on_message(nick, message)
+                self.on_message(nick, message, roles)
             except Exception:
                 pass

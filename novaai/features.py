@@ -394,12 +394,40 @@ def try_parse_calendar(text: str, profile: dict[str, Any]) -> FeatureResult:
     return FeatureResult(handled=True, response=response, save_needed=True)
 
 
+_DATE_Q = re.compile(
+    r"\b(what(?:'s| is)?|tell me|whats)\b.*\b(date|day|time|month|year)\b|"
+    r"\b(current|today'?s?)\s+(date|day|time)\b|"
+    r"\bwhat day is it\b|\bwhat time is it\b",
+    re.IGNORECASE,
+)
+
+
+def try_parse_datetime(text: str, profile: dict[str, Any]) -> FeatureResult:
+    """Answer 'what time/date/day is it' locally, without hitting the LLM."""
+    lowered = (text or "").strip().lower()
+    if not _DATE_Q.search(lowered):
+        return FeatureResult()
+    now = datetime.now()
+    wants_time = "time" in lowered
+    wants_date = any(w in lowered for w in ("date", "day", "month", "year"))
+    if wants_time and not wants_date:
+        h12 = now.hour % 12 or 12
+        ampm = "AM" if now.hour < 12 else "PM"
+        response = f"It's {h12}:{now.minute:02d} {ampm}."
+    elif wants_date and not wants_time:
+        response = f"Today is {now.strftime('%A')}, {now.day} {now.strftime('%B')} {now.year}."
+    else:
+        response = f"It's {now.strftime('%A')}, {_fmt_datetime(now)}."
+    return FeatureResult(handled=True, response=response, save_needed=False)
+
+
 def handle_feature_request(text: str, profile: dict[str, Any]) -> FeatureResult:
     """
-    Try to match *text* against any feature intent (reminder, alarm, todo,
-    shopping, calendar).  Returns the first match or an unhandled FeatureResult.
+    Try to match *text* against any feature intent (date/time, reminder, alarm,
+    todo, shopping, calendar). Returns the first match or an unhandled result.
     """
     for parser in (
+        try_parse_datetime,
         try_parse_reminder,
         try_parse_alarm,
         try_parse_todo,

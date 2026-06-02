@@ -1,6 +1,7 @@
 """NovaAI - pywebview desktop GUI with Tailwind CSS frontend."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -11,9 +12,15 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-import webview
+# pywebview is the OPTIONAL native-desktop-GUI backend. The headless web server
+# (novaai/webserver.py) reuses the Api class from this module without needing it,
+# so guard the import: it's only actually used inside main() for `--gui`.
+try:
+    import webview
+except ImportError:  # pragma: no cover - desktop GUI extra not installed
+    webview = None  # type: ignore[assignment]
 
 from .audio_input import (
     describe_selected_microphone,
@@ -27,6 +34,7 @@ from .config import Config
 from .engine import GenerationRequest, generate_reply
 from .memory import MemoryStore
 from .twitch import TwitchClient
+from . import stream_events
 from .features import (
     handle_feature_request,
     check_due_reminders,
@@ -56,7 +64,9 @@ from .features import (
 from .media import handle_media_request
 from .media_player import stop_media_playback
 from .models import SessionState
+from .paths import MMD_DIR
 from .storage import (
+    _safe_profile_id,
     append_history,
     create_profile,
     delete_profile,
@@ -87,7 +97,10 @@ from .web_search import (
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "logo.ico"
-_window: webview.Window | None = None
+_window: "webview.Window | None" = None
+# Pluggable JS sink for headless web mode. When set (by novaai/webserver.py),
+# Api._js() relays code here instead of to a pywebview window. See _js().
+_emit_js: "Callable[[str], None] | None" = None
 
 # Per-driver game settings shown in the Game panel (instead of editing .env).
 # Each field maps to a Config attribute; values are persisted to app_state.
@@ -180,7 +193,16 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
             {"key": "twitch_oauth_token", "label": "OAuth token (blank = anonymous)", "type": "password"},
             {"key": "twitch_reply_mode", "label": "Reply mode", "type": "select",
              "options": ["mention", "all", "command"]},
+            {"key": "twitch_allowed_roles", "label": "Who can talk to NovaAI", "type": "select",
+             "options": ["everyone", "subscribers", "moderators"]},
             {"key": "twitch_reply_cooldown_seconds", "label": "Reply cooldown (sec)", "type": "float"},
+        ],
+    },
+    "alerts": {
+        "label": "Stream Alerts (donations / subs / raids)",
+        "fields": [
+            {"key": "streamlabs_socket_token", "label": "Streamlabs socket token (blank = off)", "type": "password"},
+            {"key": "streamelements_jwt_token", "label": "StreamElements JWT token (blank = off)", "type": "password"},
         ],
     },
     "voice": {
@@ -273,6 +295,8 @@ class Api:
         self._stream_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._stream_responder_thread: threading.Thread | None = None
         self._last_stream_reply = 0.0
+        self.alert_sources: list = []          # Streamlabs / StreamElements clients
+        self._session_earnings = 0.0
         # Avatar
         self.avatar: AvatarBridge | None = None
         self._last_amplitude_emit = 0.0
@@ -316,10 +340,21 @@ class Api:
         return None
 
     def _js(self, code: str) -> None:
-        global _window
+        """Push JavaScript to the frontend.
+
+        In the native desktop GUI this runs in the pywebview window. In headless
+        web mode (novaai/webserver.py) there is no window, so the code is handed
+        to a pluggable sink (`_emit_js`) that relays it to connected browsers.
+        """
+        global _window, _emit_js
         if _window:
             try:
                 _window.evaluate_js(code)
+            except Exception:
+                pass
+        elif _emit_js is not None:
+            try:
+                _emit_js(code)
             except Exception:
                 pass
 
@@ -478,6 +513,17 @@ class Api:
             return {"ok": False, "msg": msg}
         finally:
             self._release()
+            # Re-arm hands-free listening no matter how the turn ended — normal
+            # reply, early-handled request, timeout, or a backend error. Without
+            # this, any failure mid-turn silently ends the conversation and Nova
+            # stops responding to speech after the first prompt.
+            if (
+                self.hands_free_enabled
+                and not self.mic_muted
+                and self.session_started
+                and not self._stopped()
+            ):
+                threading.Thread(target=self._auto_listen, daemon=True).start()
 
     def _auto_listen(self) -> None:
         time.sleep(0.3)
@@ -619,9 +665,10 @@ class Api:
             self._push_status("Stopped.")
             return "Stopped."
 
+        # Hands-free re-listen is re-armed by start_listen()'s finally block so
+        # it fires on every exit path (including errors), not just here.
         if from_voice and self.hands_free_enabled and not self.mic_muted:
             self._push_status("Listening...")
-            threading.Thread(target=self._auto_listen, daemon=True).start()
             return "Hands-free listening."
 
         self._push_status("Ready.")
@@ -734,11 +781,41 @@ class Api:
                     target=self._stream_responder, daemon=True, name="NovaAIStreamResponder"
                 )
                 self._stream_responder_thread.start()
+            self._start_alert_sources()
             self._push_state()
             return {"ok": True, "msg": f"Connecting to #{self.config.twitch_channel}..."}
         except Exception as exc:
             self.stream_started = False
             return {"ok": False, "msg": str(exc)}
+
+    def _start_alert_sources(self) -> None:
+        """Connect Streamlabs / StreamElements if tokens are configured."""
+        from . import stream_sources
+
+        self._stop_alert_sources()
+        cfg = self.config
+        on_status = lambda msg: self._push_chat("Alerts", msg, "system")
+        specs = [
+            (stream_sources.StreamlabsSource, getattr(cfg, "streamlabs_socket_token", None)),
+            (stream_sources.StreamElementsSource, getattr(cfg, "streamelements_jwt_token", None)),
+        ]
+        for cls, token in specs:
+            if not token:
+                continue
+            try:
+                src = cls(token, self.handle_stream_event, on_status)
+                if src.start():
+                    self.alert_sources.append(src)
+            except Exception as exc:
+                on_status(f"{cls.name}: failed to start ({exc}).")
+
+    def _stop_alert_sources(self) -> None:
+        for src in self.alert_sources:
+            try:
+                src.stop()
+            except Exception:
+                pass
+        self.alert_sources = []
 
     def stop_stream(self) -> dict[str, Any]:
         self.stream_started = False
@@ -748,18 +825,32 @@ class Api:
             except Exception:
                 pass
         self.twitch = None
+        self._stop_alert_sources()
         self._push_state()
         return {"ok": True, "msg": "Stream disconnected."}
 
-    def _on_twitch_message(self, username: str, text: str) -> None:
-        # Show the raw chat line in the Stream feed.
+    def _on_twitch_message(self, username: str, text: str, roles: set[str] | None = None) -> None:
+        roles = roles or set()
+        # Show the raw chat line in the Stream feed (the streamer sees all chat).
         payload = json.dumps({"username": username, "text": text})
         self._js(f"window.__onStreamMessage({payload})")
-        if self._should_reply_to(text):
+        # Only reply when the chatter's role is allowed AND the reply-mode matches.
+        if self._role_allowed(roles) and self._should_reply_to(text):
             try:
                 self._stream_queue.put_nowait((username, text))
             except queue.Full:
                 pass
+
+    def _role_allowed(self, roles: set[str]) -> bool:
+        """Gate replies by chatter role per twitch_allowed_roles."""
+        mode = getattr(self.config, "twitch_allowed_roles", "everyone") if self.config else "everyone"
+        if mode == "everyone":
+            return True
+        if mode == "moderators":
+            return bool(roles & {"moderator", "broadcaster"})
+        if mode == "subscribers":
+            return bool(roles & {"subscriber", "vip", "moderator", "broadcaster"})
+        return True
 
     def _should_reply_to(self, text: str) -> bool:
         cfg = self.config
@@ -946,15 +1037,20 @@ class Api:
             return {"ok": False, "msg": "Enable the avatar first."}
         url = self.avatar.get_frontend_url()
         block = self._avatar_profile_block()
+        path = "/?transparent=1" if block.get("transparent_bg") else "/"
         if block.get("transparent_bg"):
             url = url + "?transparent=1"
-        try:
-            import webbrowser
+        # In headless web mode the browser opens the URL itself (built from its
+        # own location, so it matches the LAN IP / Tailscale / tunnel host). Only
+        # open server-side for the local desktop GUI.
+        if _emit_js is None:
+            try:
+                import webbrowser
 
-            webbrowser.open(url)
-        except Exception:
-            pass
-        return {"ok": True, "url": url}
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return {"ok": True, "url": url, "port": self.avatar.http_port, "path": path}
 
     def set_avatar_option(self, key: str, value: Any) -> dict[str, Any]:
         block = self._avatar_profile_block()
@@ -983,6 +1079,274 @@ class Api:
             return {"ok": False, "msg": "Avatar not running."}
         try:
             self.avatar.publish_state({"emotion": emotion, "danger": False})
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    # ── stream alerts (donations / follows / subs / raids …) ──────────────────────
+
+    def _alerts_block(self) -> dict[str, Any]:
+        details = self.profile.get("profile_details") if self.profile else None
+        if isinstance(details, dict) and isinstance(details.get("alerts"), dict):
+            return details["alerts"]
+        return {}
+
+    def handle_stream_event(self, event: "stream_events.StreamEvent") -> None:
+        """React to one normalized stream event: expression + cute message + tally.
+
+        Called from the webhook/socket source threads, so it never raises.
+        """
+        try:
+            block = self._alerts_block()
+            if block and not block.get("enabled", True):
+                return
+            expr = event.expression(block.get("expressions") if block else None)
+            message = stream_events.build_message(event, block.get("messages") if block else None)
+
+            # Earnings ("stockings") tally for money events. Cheer amounts are
+            # bits, and Twitch pays ~$1 per 100 bits, so convert to dollars.
+            if event.type in stream_events.EARNING_EVENTS and event.amount > 0:
+                money = event.amount / 100.0 if event.type == "cheer" else event.amount
+                self._add_earnings(round(money, 2), event.currency, event.user, event.type)
+
+            # Show it in the chat + stream feeds.
+            label = event.type.capitalize()
+            self._push_chat("Alert", f"[{label}] {event.user}", "system")
+            companion = self.profile.get("companion_name", "NovaAI") if self.profile else "NovaAI"
+            self._push_chat(companion, message, "assistant")
+
+            # Drive the avatar expression even when speech is off.
+            if self.avatar is not None:
+                try:
+                    self.avatar.publish_state({"emotion": expr, "danger": False})
+                except Exception:
+                    pass
+
+            if (not block or block.get("speak", True)) and getattr(self.state, "voice_enabled", True):
+                self._speak(message, expr)
+        except Exception:
+            pass
+
+    def ingest_stream_event(self, payload: dict[str, Any], source: str = "webhook") -> dict[str, Any]:
+        """Entry point for the /webhook/stream endpoint and external sources."""
+        src = (source or "webhook").lower()
+        events: list = []
+        try:
+            if src == "streamlabs":
+                events = stream_events.from_streamlabs(payload)
+            elif src in {"streamelements", "se"}:
+                ev = stream_events.from_streamelements(payload)
+                events = [ev] if ev else []
+            elif src in {"twitch", "eventsub"}:
+                ev = stream_events.from_twitch_eventsub(payload)
+                events = [ev] if ev else []
+            else:
+                ev = stream_events.from_generic(payload)
+                events = [ev] if ev else []
+        except Exception:
+            events = []
+        if not events:
+            return {"ok": False, "msg": "No recognizable event in payload."}
+        for ev in events:
+            self.handle_stream_event(ev)
+        return {"ok": True, "count": len(events)}
+
+    def simulate_stream_event(
+        self, etype: str, user: str = "TestUser", amount: float = 0.0, months: int = 0
+    ) -> dict[str, Any]:
+        """Fire a fake event from the dashboard so reactions can be tested."""
+        ev = stream_events.from_generic(
+            {"type": etype, "user": user, "amount": amount, "months": months, "source": "manual"}
+        )
+        if not ev:
+            return {"ok": False, "msg": f"Unknown event type: {etype}"}
+        self.handle_stream_event(ev)
+        return {"ok": True}
+
+    # ── earnings ("stockings") tracker ────────────────────────────────────────────
+
+    def _earnings_store(self) -> dict[str, Any]:
+        from . import database
+        try:
+            return json.loads(database.get_state("earnings", "{}") or "{}")
+        except Exception:
+            return {}
+
+    def _save_earnings_store(self, data: dict[str, Any]) -> None:
+        from . import database
+        try:
+            database.set_state("earnings", json.dumps(data))
+        except Exception:
+            pass
+
+    def _add_earnings(self, amount: float, currency: str, user: str, etype: str) -> None:
+        from datetime import datetime
+        data = self._earnings_store()
+        today = datetime.now().strftime("%Y-%m-%d")
+        if data.get("today_date") != today:
+            data["today_date"] = today
+            data["today"] = 0.0
+        data["all_time"] = round(float(data.get("all_time", 0.0)) + amount, 2)
+        data["today"] = round(float(data.get("today", 0.0)) + amount, 2)
+        data["count"] = int(data.get("count", 0)) + 1
+        data["currency"] = currency or data.get("currency", "USD")
+        data["last"] = {"user": user, "amount": amount, "type": etype}
+        # In-memory session total (resets when the app restarts).
+        self._session_earnings = round(getattr(self, "_session_earnings", 0.0) + amount, 2)
+        self._save_earnings_store(data)
+        # Nudge any open overlay to refresh promptly.
+        try:
+            self._js("window.__onEarnings && window.__onEarnings()")
+        except Exception:
+            pass
+
+    def get_earnings(self) -> dict[str, Any]:
+        data = self._earnings_store()
+        return {
+            "all_time": round(float(data.get("all_time", 0.0)), 2),
+            "today": round(float(data.get("today", 0.0)), 2),
+            "session": round(getattr(self, "_session_earnings", 0.0), 2),
+            "count": int(data.get("count", 0)),
+            "currency": data.get("currency", "USD"),
+            "last": data.get("last", {}),
+        }
+
+    def reset_earnings(self, scope: str = "all") -> dict[str, Any]:
+        data = self._earnings_store()
+        if scope == "today":
+            data["today"] = 0.0
+        elif scope == "session":
+            self._session_earnings = 0.0
+        else:
+            data = {}
+            self._session_earnings = 0.0
+        self._save_earnings_store(data)
+        return {"ok": True, **self.get_earnings()}
+
+    # ── MMD dances ────────────────────────────────────────────────────────────────
+    # Each dance is ONE bundle (a "set"): a .vmd motion + optional song + optional
+    # .vmd camera, stored together under data/mmd/sets/<id>/ and listed as one row.
+
+    _MMD_SETS_DIR = MMD_DIR / "sets"
+    _MMD_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a"}
+
+    @staticmethod
+    def _mmd_safe_id(value: str) -> str:
+        import re
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(value or "")).strip("._")
+        return safe or "dance"
+
+    def _mmd_dedupe_id(self, base: str) -> str:
+        sid = base
+        n = 2
+        while (self._MMD_SETS_DIR / sid).exists():
+            sid = f"{base}-{n}"
+            n += 1
+        return sid
+
+    def _mmd_set_files(self, set_dir: Path) -> dict[str, str]:
+        """Return {motion, song, camera} filenames present in a set folder."""
+        files = {"motion": "", "song": "", "camera": ""}
+        if (set_dir / "motion.vmd").is_file():
+            files["motion"] = "motion.vmd"
+        if (set_dir / "camera.vmd").is_file():
+            files["camera"] = "camera.vmd"
+        for p in set_dir.glob("song.*"):
+            if p.suffix.lower() in self._MMD_AUDIO_EXTS:
+                files["song"] = p.name
+                break
+        return files
+
+    def create_mmd_set(self, name: str) -> dict[str, Any]:
+        """Create an empty dance set; files are uploaded into it next."""
+        display = str(name or "").strip() or "Dance"
+        sid = self._mmd_dedupe_id(self._mmd_safe_id(display))
+        set_dir = self._MMD_SETS_DIR / sid
+        set_dir.mkdir(parents=True, exist_ok=True)
+        (set_dir / "meta.json").write_text(json.dumps({"name": display}), encoding="utf-8")
+        return {"ok": True, "id": sid}
+
+    def upload_mmd_file(self, set_id: str, kind: str, filename: str, data_b64: str) -> dict[str, Any]:
+        """Add a motion/song/camera file to an existing dance set."""
+        kind = str(kind).lower()
+        if kind not in {"motion", "song", "camera"}:
+            return {"ok": False, "msg": f"Unknown kind: {kind}"}
+        set_dir = self._MMD_SETS_DIR / self._mmd_safe_id(set_id)
+        if not set_dir.is_dir():
+            return {"ok": False, "msg": "Dance set not found."}
+        ext = Path(str(filename)).suffix.lower()
+        if kind in {"motion", "camera"} and ext != ".vmd":
+            return {"ok": False, "msg": f"{kind} must be a .vmd file."}
+        if kind == "song" and ext not in self._MMD_AUDIO_EXTS:
+            return {"ok": False, "msg": "song must be .mp3/.wav/.ogg/.m4a."}
+        try:
+            raw = base64.b64decode((data_b64 or "").split(",")[-1])
+        except Exception:
+            return {"ok": False, "msg": "Invalid file data."}
+        if not raw:
+            return {"ok": False, "msg": "Empty file."}
+        target = set_dir / ("motion.vmd" if kind == "motion"
+                            else "camera.vmd" if kind == "camera"
+                            else f"song{ext}")
+        target.write_bytes(raw)
+        return {"ok": True}
+
+    def list_mmd_sets(self) -> list[dict[str, Any]]:
+        sets: list[dict[str, Any]] = []
+        if self._MMD_SETS_DIR.is_dir():
+            for set_dir in sorted(self._MMD_SETS_DIR.iterdir()):
+                if not set_dir.is_dir():
+                    continue
+                name = set_dir.name
+                try:
+                    meta = json.loads((set_dir / "meta.json").read_text(encoding="utf-8"))
+                    name = str(meta.get("name", name))
+                except Exception:
+                    pass
+                files = self._mmd_set_files(set_dir)
+                sets.append({
+                    "id": set_dir.name,
+                    "name": name,
+                    "has_motion": bool(files["motion"]),
+                    "has_song": bool(files["song"]),
+                    "has_camera": bool(files["camera"]),
+                })
+        return sets
+
+    def delete_mmd_set(self, set_id: str) -> dict[str, Any]:
+        import shutil
+        set_dir = self._MMD_SETS_DIR / self._mmd_safe_id(set_id)
+        try:
+            if set_dir.is_dir():
+                shutil.rmtree(set_dir)
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def play_mmd_set(self, set_id: str, loop: bool = False) -> dict[str, Any]:
+        """Play a whole dance set (motion + its song + its camera) on the avatar."""
+        if self.avatar is None:
+            return {"ok": False, "msg": "Start the avatar first."}
+        sid = self._mmd_safe_id(set_id)
+        set_dir = self._MMD_SETS_DIR / sid
+        files = self._mmd_set_files(set_dir)
+        if not files["motion"]:
+            return {"ok": False, "msg": "This dance has no motion (.vmd)."}
+        def _url(fname: str) -> str:
+            return f"/mmd/sets/{sid}/{fname}" if fname else ""
+        try:
+            self.avatar.publish_mmd(
+                _url(files["motion"]), _url(files["song"]), _url(files["camera"]), bool(loop)
+            )
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def stop_mmd(self) -> dict[str, Any]:
+        if self.avatar is None:
+            return {"ok": False, "msg": "Avatar not running."}
+        try:
+            self.avatar.publish_mmd_stop()
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
@@ -1175,6 +1539,9 @@ class Api:
             self._reresolve_llm_url()
             if self.memory:
                 self.memory.config = self.config  # pick up new embedding settings
+        if section == "alerts" and self.stream_started:
+            # Reconnect Streamlabs/StreamElements with the new tokens immediately.
+            self._start_alert_sources()
         try:
             from . import database
 
@@ -1184,7 +1551,10 @@ class Api:
         except Exception:
             pass
         self._push_state()
-        return {"ok": True, "msg": "Settings saved."}
+        msg = "Settings saved."
+        if section == "alerts" and not self.stream_started:
+            msg = "Settings saved. Click Connect on the Stream page to start alerts."
+        return {"ok": True, "msg": msg}
 
     # ── model auto-detect ───────────────────────────────────────────────────────
 
@@ -1345,6 +1715,7 @@ class Api:
             "driver": driver,
             "goal": self.game_agent.goal if self.game_agent else "",
             "viewer_url": viewer_url,
+            "viewer_port": self.config.mc_viewer_port if self.config else None,
         }
 
     def open_game_view(self) -> dict[str, Any]:
@@ -1352,13 +1723,17 @@ class Api:
         url = status.get("viewer_url")
         if not url:
             return {"ok": False, "msg": "Live view is only available while a Minecraft game is running."}
-        try:
-            import webbrowser
+        # In headless web mode the browser opens the URL itself (built from its
+        # own location, so it matches the LAN IP / Tailscale / tunnel host). Only
+        # open server-side for the local desktop GUI.
+        if _emit_js is None:
+            try:
+                import webbrowser
 
-            webbrowser.open(url)
-        except Exception:
-            pass
-        return {"ok": True, "url": url}
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return {"ok": True, "url": url, "port": status.get("viewer_port")}
 
     def _build_game_driver(self, driver_name: str):
         if driver_name == "minecraft":
@@ -1689,6 +2064,64 @@ class Api:
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
 
+    def export_profile(self, profile_id: str) -> dict[str, Any]:
+        """Return a profile wrapped in a portable envelope for download.
+
+        The frontend turns this into a .json file the user can move to another
+        machine (e.g. local PC -> Raspberry Pi) and import there.
+        """
+        try:
+            profile = load_profile_by_id(profile_id)
+            name = str(profile.get("profile_name", profile_id)) or profile_id
+            safe = _safe_profile_id(name)
+            return {
+                "ok": True,
+                "filename": f"{safe}.nova-profile.json",
+                "data": {
+                    "nova_profile_export": True,
+                    "version": 1,
+                    "profile": profile,
+                },
+            }
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def import_profile(self, data: Any, name: str = "") -> dict[str, Any]:
+        """Create a new profile from imported JSON (envelope or raw profile).
+
+        Accepts either the export envelope produced by ``export_profile`` or a
+        bare profile dict. The imported profile always becomes a NEW profile
+        (its id is de-duplicated), so importing never overwrites an existing one.
+        """
+        try:
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                return {"ok": False, "msg": "Invalid profile file."}
+            src = data.get("profile") if isinstance(data.get("profile"), dict) else data
+            if not isinstance(src, dict) or not src:
+                return {"ok": False, "msg": "Invalid profile file."}
+            # A profile from another machine can carry an absolute VRM path that
+            # is meaningless here. Reduce it to a filename served from this
+            # install's uploads dir, and drop the machine-specific absolute path.
+            details = src.get("profile_details")
+            if isinstance(details, dict) and isinstance(details.get("avatar"), dict):
+                av = details["avatar"]
+                last = av.get("last_loaded_vrm_path")
+                if isinstance(last, str) and last:
+                    av["last_loaded_vrm_path"] = AvatarBridge._to_servable_url(last)
+                av.pop("vrm_path", None)
+            profile_name = (
+                str(name).strip()
+                or str(src.get("profile_name", "")).strip()
+                or str(src.get("companion_name", "")).strip()
+                or "Imported Profile"
+            )
+            p = create_profile(profile_name, base_profile=src)
+            return {"ok": True, "profile_id": p["profile_id"], "profile_name": p["profile_name"]}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
     def get_profile_detail(self, profile_id: str) -> dict[str, Any]:
         try:
             return load_profile_by_id(profile_id)
@@ -1861,6 +2294,16 @@ def _set_window_icon() -> None:
 
 def main() -> None:
     global _window
+    if webview is None:
+        raise SystemExit(
+            "The desktop GUI needs pywebview, which isn't installed.\n"
+            "Install it with:  pip install -r requirements-gui.txt\n"
+            "Or run the headless browser UI instead:  python app.py --web"
+        )
+    # The desktop GUI is a local app, so its sibling services (avatar overlay,
+    # Minecraft live view) stay bound to localhost only.
+    os.environ.setdefault("NOVA_BIND_HOST", "127.0.0.1")
+
     api = Api()
     html_path = STATIC_DIR / "index.html"
 

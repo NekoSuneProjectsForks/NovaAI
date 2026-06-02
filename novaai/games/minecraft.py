@@ -7,6 +7,7 @@ driver launches that process and talks to it over HTTP, keeping the LLM brain in
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import threading
@@ -75,8 +76,17 @@ class MinecraftDriver:
             env_args += ["--profiles-folder", str(self.config.mc_profiles_folder)]
         if self.config.mc_version:
             env_args += ["--version", str(self.config.mc_version)]
+        # Bind the live-view site to the same interface as the rest of NovaAI:
+        # all interfaces in web mode (reachable from LAN/Tailscale/tunnel),
+        # localhost in the desktop GUI. MC_VIEWER_HOST overrides just this.
+        viewer_host = (
+            os.getenv("MC_VIEWER_HOST")
+            or os.getenv("NOVA_BIND_HOST")
+            or "0.0.0.0"
+        )
         env_args += [
             "--viewer-port", str(self.config.mc_viewer_port),
+            "--viewer-host", str(viewer_host),
             "--inventory-port", str(self.config.mc_inventory_port),
             "--viewer-first-person", "true" if self.config.mc_viewer_first_person else "false",
         ]

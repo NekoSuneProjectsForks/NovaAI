@@ -108,6 +108,25 @@ DEFAULT_PROFILE: dict[str, Any] = {
             "idle_motion": True,
             "transparent_bg": False,
         },
+        "alerts": {
+            "enabled": True,
+            "speak": True,
+            # Per-event cute messages. {user} {amount} {currency} {months}
+            # {tier} {viewers} {message} are filled in when available. Blank =
+            # use the built-in default for that event.
+            "messages": {
+                "donation": "Awww thank you so much {user} for the {amount} {currency}! You're amazing, I love you~ 💜",
+                "follow": "Welcome in, {user}! Thanks for the follow, cutie~",
+                "subscription": "Eeee {user} just subscribed!! Thank you so much, you're the best!",
+                "resub": "{user} resubbed for {months} months?! My heart! Thank you~",
+                "giftsub": "{user} gifted subs?! So generous! Thank you thank you~",
+                "cheer": "Thank you for the {amount} bits, {user}! Sparkly and shiny~",
+                "raid": "RAAAID! Welcome everyone from {user}'s channel! Make yourselves at home~",
+                "host": "Thanks for the host, {user}! You're so sweet~",
+            },
+            # Override the avatar expression per event (blank = sensible default).
+            "expressions": {},
+        },
         "reminders": [],
         "alarms": [],
         "calendar": [],

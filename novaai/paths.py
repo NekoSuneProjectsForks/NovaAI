@@ -8,6 +8,8 @@ AUDIO_DIR = ROOT_DIR / "audio"
 SONGS_DIR = AUDIO_DIR / "songs"
 STATIC_DIR = ROOT_DIR / "novaai" / "static"
 AVATAR_UPLOADS_DIR = DATA_DIR / "avatars"
+# MMD dance assets for the avatar: motion (.vmd), audio, and optional camera (.vmd).
+MMD_DIR = DATA_DIR / "mmd"
 PROFILE_PATH = DATA_DIR / "profile.json"
 PROFILES_PATH = DATA_DIR / "profiles.json"
 HISTORY_PATH = DATA_DIR / "history.jsonl"

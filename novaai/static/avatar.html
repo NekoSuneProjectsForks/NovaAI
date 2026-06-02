@@ -124,9 +124,41 @@
         grid-template-columns: 1fr;
       }
     }
+
+    /* OBS overlay mode (?transparent=1): show ONLY the avatar — no header,
+       panels, upload zone, badges, or log. The canvas fills the viewport so
+       it drops straight into a Browser Source. */
+    body.obs-mode { background: transparent !important; overflow: hidden; }
+    body.obs-mode header,
+    body.obs-mode .panel:not(:has(#viewer)),
+    body.obs-mode .panel > div,
+    body.obs-mode .side-section,
+    body.obs-mode #dropZone,
+    body.obs-mode #log { display: none !important; }
+    body.obs-mode main { grid-template-columns: 1fr; gap: 0; padding: 0; }
+    body.obs-mode .panel { background: transparent !important; border: none !important; padding: 0 !important; gap: 0 !important; }
+    body.obs-mode #viewer {
+      background: transparent !important;
+      border-radius: 0;
+      width: 100vw; height: 100vh; min-height: 100vh;
+    }
   </style>
 </head>
 <body>
+<button id="audioUnlock" style="display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 18px;border:none;border-radius:999px;background:#7c4dff;color:#fff;font-size:14px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4)">🔊 Click to enable dance audio</button>
+<div id="mmdTune" style="display:none;position:fixed;top:12px;right:12px;z-index:9998;background:rgba(13,28,43,.95);border:1px solid #17324a;border-radius:12px;padding:12px 14px;font-size:12px;color:#d7e8ff;width:230px;box-shadow:0 6px 24px rgba(0,0,0,.45)">
+  <div style="font-weight:700;margin-bottom:8px">MMD body tuning</div>
+  <div style="margin-bottom:6px">Facing/axis: <span id="mt-axisval"></span></div>
+  <div id="mt-axis" style="display:flex;gap:4px;margin-bottom:8px"></div>
+  <div style="margin-bottom:6px">Knees: <span id="mt-kneeval"></span></div>
+  <div style="display:flex;gap:4px;margin-bottom:8px"><button data-knee="1" style="flex:1;padding:6px">Forward</button><button data-knee="-1" style="flex:1;padding:6px">Backward</button></div>
+  <div style="margin-bottom:6px">Leg IK: <span id="mt-ikval"></span></div>
+  <div style="display:flex;gap:4px;margin-bottom:8px"><button data-ik="1" style="flex:1;padding:6px">On</button><button data-ik="0" style="flex:1;padding:6px">Off</button></div>
+  <div style="margin-bottom:6px">Arms down: <span id="mt-armval"></span>°</div>
+  <div style="display:flex;gap:4px;margin-bottom:8px"><button id="mt-arm-dn" style="flex:1;padding:6px">− less</button><button id="mt-arm-up" style="flex:1;padding:6px">+ more</button></div>
+  <button id="mt-replay" style="width:100%;padding:8px;background:#7c4dff">Replay dance</button>
+  <div style="margin-top:8px;font-size:11px;color:#9bb1c7">Settings save automatically. Tell the dev these numbers once it looks right.</div>
+</div>
 <header>
   <div>
     <h1>NovaAI VRM Portal</h1>
@@ -164,7 +196,8 @@
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
       "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
-      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js",
+      "mmd-parser": "https://cdn.jsdelivr.net/npm/mmd-parser@1.0.4/+esm"
     }
   }
 </script>
@@ -172,6 +205,7 @@
   import * as THREE from 'three';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+  import * as MMDParser from 'mmd-parser';
 
   const statusEl = document.getElementById('status');
   const dropZone = document.getElementById('dropZone');
@@ -195,8 +229,9 @@
   const IDLE_ENABLED = !QUERY.has('noidle');
   renderer.setClearColor(0x07131d, TRANSPARENT ? 0 : 1);
   if (TRANSPARENT) {
-    document.body.style.background = 'transparent';
-    document.querySelectorAll('header, .panel:not(:has(#viewer))').forEach(el => el.style.display = 'none');
+    // Hide all UI chrome — only the avatar canvas shows (see body.obs-mode CSS).
+    document.body.classList.add('obs-mode');
+    requestAnimationFrame(resize);  // canvas is now full-viewport; re-fit
   }
 
   const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
@@ -214,6 +249,7 @@
   let targetUrl = null;
   let mouthCurrent = 0;   // smoothed mouth-open value driven by TTS amplitude
   let mouthTarget = 0;
+  let lastVisemeAt = 0;   // perf.now() of the last real amplitude update
   let speaking = false;
   let currentEmotion = 'neutral';
   let boneNodes = {};     // cached humanoid bone nodes for posing
@@ -273,26 +309,112 @@
   }
 
   // three-vrm v3 uses vrm.expressionManager with lowercase preset names
-  // (happy/angry/sad/relaxed/neutral). It also normalizes legacy VRM 0.x
-  // blendshapes (Joy/Angry/Sorrow/Fun) onto the same names.
-  const EMOTION_PRESETS = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+  // (happy/angry/sad/relaxed/surprised/neutral). It also normalizes legacy
+  // VRM 0.x blendshapes (Joy/Angry/Sorrow/Fun) onto the same names.
+  const VRM_PRESETS = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+  // Channels the render loop drives every frame (lip-sync, blink, eye-look) —
+  // never reset/override these from applyExpression().
+  const RESERVED_EXPR = new Set([
+    'aa', 'ih', 'ou', 'ee', 'oh', 'blink', 'blinkleft', 'blinkright',
+    'lookup', 'lookdown', 'lookleft', 'lookright',
+  ]);
+
+  // Rich emotion set. Each maps to a base VRM preset + weight, optional extra
+  // preset blends, and optional CUSTOM blendshape names to try (model-specific,
+  // e.g. blush / wink / love that many anime VRMs ship). Names the model lacks
+  // are skipped, so every emotion still reads through its base preset + the
+  // body-language pose below.
+  const EMOTION_MAP = {
+    neutral:   { base: ['neutral', 1] },
+    happy:     { base: ['happy', 1] },
+    joy:       { base: ['happy', 1] },
+    excited:   { base: ['happy', 1], blend: [['surprised', 0.35]] },
+    laugh:     { base: ['happy', 1] },
+    proud:     { base: ['happy', 0.7] },
+    smug:      { base: ['happy', 0.45], custom: ['smug', 'Smug', 'grin'] },
+    blush:     { base: ['happy', 0.45], custom: ['blush', 'Blush', 'shy', 'Shy', 'embarrassed', 'Embarrassed'] },
+    shy:       { base: ['happy', 0.3],  custom: ['blush', 'Blush', 'shy', 'Shy'] },
+    love:      { base: ['happy', 0.8],  custom: ['love', 'Love', 'heart', 'Heart', 'blush', 'Blush'] },
+    flirty:    { base: ['happy', 0.5],  custom: ['wink', 'Wink', 'blush', 'Blush'] },
+    wink:      { base: ['happy', 0.6],  custom: ['wink', 'Wink', 'blinkLeft', 'blinkRight'] },
+    sad:       { base: ['sad', 1] },
+    cry:       { base: ['sad', 1],      custom: ['cry', 'Cry', 'sad'] },
+    pout:      { base: ['angry', 0.4],  custom: ['blush', 'Blush'] },
+    angry:     { base: ['angry', 1] },
+    anxious:   { base: ['sad', 0.5],    blend: [['surprised', 0.2]] },
+    scared:    { base: ['surprised', 0.7], blend: [['sad', 0.4]] },
+    surprised: { base: ['surprised', 1] },
+    shocked:   { base: ['surprised', 1] },
+    confused:  { base: ['sad', 0.3],    blend: [['surprised', 0.3]] },
+    relaxed:   { base: ['relaxed', 1] },
+    calm:      { base: ['relaxed', 0.7] },
+    sleepy:    { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
+    sleeping:  { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
+    sleep:     { base: ['relaxed', 1],  custom: ['sleep', 'Sleep', 'sleepy'] },
+    fun:       { base: ['relaxed', 1] },
+  };
+
+  // "sleeping"/"sleep" lays the avatar down (as if in bed) with eyes closed.
+  // Tracked separately so we only re-rotate + reframe on the state change.
+  let lyingDown = false;
+  function setSleeping(on) {
+    if (on === lyingDown || !currentVrm) return;
+    lyingDown = on;
+    // Base upright pose faces the camera at (0, PI, 0); add a Z quarter-turn to
+    // lie horizontally across the frame. (If she lies the wrong way, flip the
+    // sign of the Z term.) Reframe so the lying silhouette stays centered.
+    currentVrm.scene.rotation.set(0, Math.PI, on ? Math.PI / 2 : 0);
+    currentVrm.scene.updateWorldMatrix(true, true);
+    frameAvatar();
+  }
+
+  // Cache the lowercase set of expression names a model actually exposes so we
+  // only apply custom blendshapes (blush/wink/…) the VRM truly has.
+  function availableExpressionNames(em) {
+    if (em.__novaNames) return em.__novaNames;
+    const set = new Set();
+    try {
+      if (Array.isArray(em.expressions)) {
+        em.expressions.forEach((e) => {
+          if (e && e.expressionName) set.add(String(e.expressionName).toLowerCase());
+        });
+      }
+      if (em.expressionMap) {
+        Object.keys(em.expressionMap).forEach((k) => set.add(String(k).toLowerCase()));
+      }
+    } catch (e) { /* older API */ }
+    em.__novaNames = set;
+    return set;
+  }
 
   function applyExpression(expression) {
     currentEmotion = String(expression || 'neutral').toLowerCase();
+    setSleeping(currentEmotion === 'sleeping' || currentEmotion === 'sleep');
     if (!currentVrm || !currentVrm.expressionManager) return;
     const em = currentVrm.expressionManager;
-    EMOTION_PRESETS.forEach((preset) => {
-      try { em.setValue(preset, 0); } catch (error) { /* missing preset */ }
+    const names = availableExpressionNames(em);
+
+    // Reset every channel we might have driven (presets + any known custom),
+    // leaving lip-sync/blink/eye-look to the render loop.
+    const toReset = new Set(VRM_PRESETS);
+    Object.values(EMOTION_MAP).forEach((d) => (d.custom || []).forEach((c) => toReset.add(c)));
+    toReset.forEach((name) => {
+      if (RESERVED_EXPR.has(name.toLowerCase())) return;
+      try { em.setValue(name, 0); } catch (e) { /* not on this model */ }
     });
-    const preset = {
-      happy: 'happy', joy: 'happy',
-      sad: 'sad', sorrow: 'sad',
-      angry: 'angry',
-      anxious: 'relaxed', fun: 'relaxed', relaxed: 'relaxed',
-      surprised: 'surprised',
-      neutral: 'neutral',
-    }[currentEmotion] || 'neutral';
-    try { em.setValue(preset, 1); } catch (error) { /* unsupported */ }
+
+    const def = EMOTION_MAP[currentEmotion] || EMOTION_MAP.neutral;
+    const setIf = (name, w) => {
+      if (!name || RESERVED_EXPR.has(name.toLowerCase())) return false;
+      try { em.setValue(name, w); return true; } catch (e) { return false; }
+    };
+    setIf(def.base[0], def.base[1]);                       // base preset
+    (def.blend || []).forEach(([n, w]) => setIf(n, w));    // extra preset blends
+    if (def.custom) {                                      // first custom the model has
+      for (const c of def.custom) {
+        if (names.has(c.toLowerCase()) && setIf(c, 1)) break;
+      }
+    }
   }
 
   // ── Posing: break the default T-pose and add emotion body language ──────────
@@ -308,11 +430,30 @@
   const EMOTION_POSE = {
     happy:     { head: { x: -0.05, z: 0.08 }, chest: { x: -0.04 } },
     joy:       { head: { x: -0.05, z: 0.08 }, chest: { x: -0.04 } },
+    excited:   { spine: { x: -0.06 }, head: { x: -0.10 }, chest: { x: -0.07 } },
+    laugh:     { head: { x: -0.12, z: 0.06 }, chest: { x: -0.06 } },
+    proud:     { spine: { x: -0.05 }, chest: { x: -0.07 }, head: { x: -0.06 } },
+    smug:      { head: { x: -0.06, y: 0.10 }, chest: { x: -0.03 } },
+    blush:     { head: { x: 0.12, y: 0.10, z: 0.05 }, chest: { x: 0.03 } },
+    shy:       { head: { x: 0.16, y: 0.12, z: 0.06 }, leftUpperArm: { z: 0.10 }, rightUpperArm: { z: -0.10 } },
+    love:      { head: { x: -0.06, z: 0.10 }, chest: { x: -0.05 } },
+    flirty:    { head: { x: -0.04, y: -0.08, z: 0.10 } },
+    wink:      { head: { z: 0.08 } },
     sad:       { head: { x: 0.28 }, chest: { x: 0.14 }, leftUpperArm: { z: 0.14 }, rightUpperArm: { z: -0.14 } },
+    cry:       { head: { x: 0.32 }, chest: { x: 0.16 }, leftUpperArm: { z: 0.18 }, rightUpperArm: { z: -0.18 } },
+    pout:      { head: { x: 0.10, y: -0.10 }, chest: { x: 0.04 } },
     angry:     { spine: { x: 0.14 }, head: { x: 0.08 }, chest: { x: 0.05 } },
     anxious:   { head: { x: 0.12, y: 0.06 }, leftUpperArm: { z: 0.10 }, rightUpperArm: { z: -0.10 } },
+    scared:    { spine: { x: 0.10 }, head: { x: 0.10 }, leftUpperArm: { z: 0.16 }, rightUpperArm: { z: -0.16 } },
     surprised: { head: { x: -0.16 }, chest: { x: -0.06 } },
+    shocked:   { head: { x: -0.18 }, chest: { x: -0.07 }, spine: { x: -0.05 } },
+    confused:  { head: { z: 0.16, x: -0.04 } },
     relaxed:   {},
+    calm:      {},
+    sleepy:    { head: { x: 0.22, z: 0.10 }, chest: { x: 0.08 } },
+    sleeping:  { head: { x: 0.10, z: 0.06 }, chest: { x: 0.05 } },
+    sleep:     { head: { x: 0.10, z: 0.06 }, chest: { x: 0.05 } },
+    fun:       {},
     neutral:   {},
   };
   const POSE_BONES = ['hips', 'head', 'neck', 'chest', 'upperChest', 'spine',
@@ -396,6 +537,468 @@
     }
   }
 
+  // ── MMD dance playback ───────────────────────────────────────────────────────
+  // Plays a .vmd motion (and optional .vmd camera + audio) on the VRM by mapping
+  // MMD's standard Japanese bone/morph names onto the VRM humanoid. Best-effort:
+  // the MMD→three handedness is a single Z-flip (MMD_FLIP). If a dance comes out
+  // mirrored front-to-back, flip MMD_FLIP.
+  const MMD_FPS = 30;
+  const MMD_POS_SCALE = 0.08;   // MMD units ≈ 12.5 per metre
+
+  // Live-tunable retarget settings (axis flip, leg IK, arm-down amount, knee
+  // bend direction). Defaults come from localStorage, then ?query, then sane
+  // values. The on-screen tuning panel (non-transparent overlay) edits these and
+  // re-applies the dance instantly, so the correct combo can be found by eye.
+  function _lsGet(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } }
+  function _lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
+  const mmdCfg = {
+    axis: parseInt(_lsGet('mmdAxis', (QUERY && QUERY.get('mmdaxis')) || '1'), 10) || 0,
+    ik: _lsGet('mmdIK', (QUERY && QUERY.get('ik')) || '1') !== '0',
+    armDeg: parseFloat(_lsGet('mmdArm', (QUERY && QUERY.get('armangle')) || '35')) || 0,
+    knee: parseFloat(_lsGet('mmdKnee', '1')) || 1,   // +1 knees forward, -1 backward
+  };
+  // The torso is handled specially (see updateMmd): MMD splits it into upper
+  // body (上半身) and lower body (下半身) both under the center, while VRM has a
+  // single hips→spine chain. These are the SIMPLE 1:1 bones only.
+  const MMD_SIMPLE_MAP = {
+    '首':'neck','頭':'head',
+    '左肩':'leftShoulder','左腕':'leftUpperArm','左ひじ':'leftLowerArm','左手首':'leftHand',
+    '右肩':'rightShoulder','右腕':'rightUpperArm','右ひじ':'rightLowerArm','右手首':'rightHand',
+    '左足':'leftUpperLeg','左ひざ':'leftLowerLeg','左足首':'leftFoot','左つま先':'leftToes',
+    '右足':'rightUpperLeg','右ひざ':'rightLowerLeg','右足首':'rightFoot','右つま先':'rightToes',
+    '左目':'leftEye','右目':'rightEye',
+    '左親指０':'leftThumbProximal','左親指１':'leftThumbProximal','左親指２':'leftThumbDistal',
+    '左人指１':'leftIndexProximal','左人指２':'leftIndexIntermediate','左人指３':'leftIndexDistal',
+    '左中指１':'leftMiddleProximal','左中指２':'leftMiddleIntermediate','左中指３':'leftMiddleDistal',
+    '左薬指１':'leftRingProximal','左薬指２':'leftRingIntermediate','左薬指３':'leftRingDistal',
+    '左小指１':'leftLittleProximal','左小指２':'leftLittleIntermediate','左小指３':'leftLittleDistal',
+    '右親指０':'rightThumbProximal','右親指１':'rightThumbProximal','右親指２':'rightThumbDistal',
+    '右人指１':'rightIndexProximal','右人指２':'rightIndexIntermediate','右人指３':'rightIndexDistal',
+    '右中指１':'rightMiddleProximal','右中指２':'rightMiddleIntermediate','右中指３':'rightMiddleDistal',
+    '右薬指１':'rightRingProximal','右薬指２':'rightRingIntermediate','右薬指３':'rightRingDistal',
+    '右小指１':'rightLittleProximal','右小指２':'rightLittleIntermediate','右小指３':'rightLittleDistal',
+  };
+  // Torso bone names (handled specially). Aliases included.
+  const MMD_T = {
+    root: ['全ての親', '全て親'], center: ['センター'], groove: ['グルーブ'],
+    lower: ['下半身'], upper: ['上半身'], upper2: ['上半身2', '上半身２'],
+  };
+  const MMD_MORPH_MAP = {
+    'まばたき':'blink','ウィンク':'blink','ウィンク２':'blink','まばたき右':'blinkRight','ウィンク右':'blinkRight',
+    '笑い':'happy','笑':'happy','喜び':'happy','にこり':'happy','怒り':'angry','真面目':'neutral',
+    '悲しい':'sad','困る':'sad','じと目':'sad',
+    'あ':'aa','い':'ih','う':'ou','え':'ee','お':'oh',
+  };
+  // Expressions MMD may drive — reset each frame so morphs never get stuck on.
+  const MMD_RESET_EXPR = ['blink','blinkRight','aa','ih','ou','ee','oh','happy','angry','sad','neutral'];
+
+  // Leg IK: MMD dances drive the legs through foot-IK target bones (足ＩＫ), not
+  // direct leg rotations, so we solve a 2-bone IK so the ankle reaches the
+  // (position-animated) IK target. Toggle live in the tuning panel (mmdCfg.ik).
+  const MMD_IK = {
+    left:  { ik: '左足ＩＫ', toe: '左つま先ＩＫ', upper: 'leftUpperLeg', lower: 'leftLowerLeg', foot: 'leftFoot' },
+    right: { ik: '右足ＩＫ', toe: '右つま先ＩＫ', upper: 'rightUpperLeg', lower: 'rightLowerLeg', foot: 'rightFoot' },
+  };
+
+  // Analytic 2-bone IK: given joint A (hip), target T (ankle), bone lengths
+  // L1/L2 and a pole direction (which way the knee bends), return the knee point.
+  function _solveTwoBone(A, T, L1, L2, pole) {
+    const toT = T.clone().sub(A);
+    let d = toT.length();
+    d = Math.max(Math.abs(L1 - L2) + 1e-4, Math.min(d, L1 + L2 - 1e-4));
+    const dir = toT.clone().normalize();
+    const a = (d * d + L1 * L1 - L2 * L2) / (2 * d);
+    const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    // Bend axis = component of the pole perpendicular to the leg line.
+    let bend = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir)));
+    if (bend.lengthSq() < 1e-6) bend.set(0, 0, 1).sub(dir.clone().multiplyScalar(dir.z));
+    bend.normalize();
+    return A.clone().add(dir.multiplyScalar(a)).add(bend.multiplyScalar(h));
+  }
+
+  // Point a bone from `fromW` toward `toW` (world positions). restDirLocal is the
+  // bone's rest direction in its PARENT's local frame (legs rest pointing -Y).
+  const _DOWN = new THREE.Vector3(0, -1, 0);
+  function _aimBone(node, fromW, toW, restDirLocal) {
+    if (!node.parent) return;
+    const pq = node.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const desired = toW.clone().sub(fromW).normalize().applyQuaternion(pq);
+    if (desired.lengthSq() < 1e-8) return;
+    node.quaternion.setFromUnitVectors(restDirLocal, desired);
+  }
+
+  // Arm A-pose offset: VRM rests in a T-pose (arms straight out) but MMD rests in
+  // an A-pose (arms down). The amount is mmdCfg.armDeg (tunable in the panel);
+  // the DIRECTION is computed from each arm's real rest geometry so it always
+  // drops the arms regardless of the model's axis convention.
+  function _computeArmOffsets(hb) {
+    const off = {};
+    const angle = (mmdCfg.armDeg || 0) * Math.PI / 180;
+    if (!angle || !hb) return off;
+    const up = new THREE.Vector3(0, 1, 0);
+    for (const [armBone, childBone] of [['leftUpperArm', 'leftLowerArm'], ['rightUpperArm', 'rightLowerArm']]) {
+      const a = hb.getNormalizedBoneNode(armBone);
+      const c = hb.getNormalizedBoneNode(childBone);
+      if (!a || !c) continue;
+      const sh = a.getWorldPosition(new THREE.Vector3());
+      const el = c.getWorldPosition(new THREE.Vector3());
+      const restDir = el.sub(sh).normalize();             // horizontal arm direction
+      const axis = new THREE.Vector3().crossVectors(restDir, up);  // horizontal, ⟂ arm
+      if (axis.lengthSq() < 1e-6) continue;
+      axis.normalize();
+      // World pre-rotation that tips the arm toward -Y (down).
+      const P = new THREE.Quaternion().setFromAxisAngle(axis, -angle);
+      const pwq = a.parent ? a.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+      // Convert the world pre-rotation into the bone's local (parent) frame.
+      off[armBone] = pwq.clone().invert().multiply(P).multiply(pwq);
+    }
+    return off;
+  }
+
+  let mmd = null;          // active dance state, or null
+  let mmdAudio = null;     // HTMLAudioElement for the dance track
+  let lastMmdPayload = null; // remember the last dance so the tuning panel can re-apply
+
+  function _convQuat(r) {
+    const x = r[0], y = r[1], z = r[2], w = r[3];
+    switch (mmdCfg.axis) {
+      case 0:  return new THREE.Quaternion(x, y, z, w);     // as-is
+      case 2:  return new THREE.Quaternion(x, -y, -z, w);   // mirror X axis
+      case 3:  return new THREE.Quaternion(-x, y, -z, w);   // mirror Y axis
+      default: return new THREE.Quaternion(x, y, -z, -w);   // 1: Z-flip (chirality-preserving)
+    }
+  }
+  function _convPos(p) {
+    const s = MMD_POS_SCALE;
+    switch (mmdCfg.axis) {
+      case 0:  return new THREE.Vector3(p[0] * s,  p[1] * s,  p[2] * s);
+      case 2:  return new THREE.Vector3(-p[0] * s, p[1] * s,  p[2] * s);
+      case 3:  return new THREE.Vector3(p[0] * s,  p[1] * s, -p[2] * s);
+      default: return new THREE.Vector3(p[0] * s,  p[1] * s, -p[2] * s);
+    }
+  }
+  function _sample(keys, t, kind) {
+    // keys: sorted [{t, q?, p?, w?}]. Returns interpolated value.
+    if (!keys.length) return null;
+    if (t <= keys[0].t) return keys[0];
+    if (t >= keys[keys.length - 1].t) return keys[keys.length - 1];
+    let lo = 0, hi = keys.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; (keys[mid].t <= t ? lo = mid : hi = mid); }
+    const a = keys[lo], b = keys[hi];
+    const f = (t - a.t) / Math.max(1e-6, b.t - a.t);
+    if (kind === 'quat') return { q: a.q.clone().slerp(b.q, f) };
+    if (kind === 'pos') return { p: a.p.clone().lerp(b.p, f) };
+    return { w: a.w + (b.w - a.w) * f };
+  }
+
+  async function startMmd(payload) {
+    if (!currentVrm) { logMessage('Load a VRM before playing MMD.'); return; }
+    lastMmdPayload = payload;
+    try {
+      stopMmd(false);
+      logMessage(`MMD: loading ${payload.motion}`);
+      const parser = new MMDParser.Parser();
+      const buf = await (await fetch(payload.motion)).arrayBuffer();
+      const vmd = parser.parseVmd(buf);
+
+      // Convert every MMD bone track once, keyed by its MMD (Japanese) name.
+      const tracks = {};
+      const grouped = {};
+      for (const m of vmd.motions) (grouped[m.boneName] = grouped[m.boneName] || []).push(m);
+      let maxT = 0;
+      for (const [jp, list] of Object.entries(grouped)) {
+        list.sort((a, b) => a.frameNum - b.frameNum);
+        tracks[jp] = list.map((m) => {
+          const t = m.frameNum / MMD_FPS; maxT = Math.max(maxT, t);
+          return { t, q: _convQuat(m.rotation), p: _convPos(m.position) };
+        });
+      }
+
+      // Resolve VRM nodes for the simple 1:1 bones we actually have tracks for.
+      const hb = currentVrm.humanoid;
+      const simple = [];
+      for (const [jp, vrmBone] of Object.entries(MMD_SIMPLE_MAP)) {
+        if (!tracks[jp]) continue;
+        const node = hb && hb.getNormalizedBoneNode(vrmBone);
+        if (node) simple.push({ jp, node, vrmBone, offset: null });
+      }
+      const torso = {
+        hips: hb && hb.getNormalizedBoneNode('hips'),
+        spine: hb && hb.getNormalizedBoneNode('spine'),
+        chest: hb && hb.getNormalizedBoneNode('chest'),
+      };
+      const hipsBase = torso.hips ? torso.hips.position.clone() : null;
+
+      // Rest-pose capture: reset the measured bones to their true normalized
+      // (T-pose) rest — NOT the idle pose — so the arm/leg geometry is clean.
+      let ik = null;
+      if (hb) {
+        const measure = ['leftUpperArm', 'leftLowerArm', 'rightUpperArm', 'rightLowerArm',
+          'leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'rightUpperLeg', 'rightLowerLeg', 'rightFoot',
+          'hips', 'spine', 'chest'];
+        for (const b of measure) { const n = hb.getNormalizedBoneNode(b); if (n) n.quaternion.identity(); }
+        if (torso.hips && hipsBase) torso.hips.position.copy(hipsBase);
+        currentVrm.scene.updateMatrixWorld(true);
+        const armOffsets = _computeArmOffsets(hb);
+        for (const s of simple) if (armOffsets[s.vrmBone]) s.offset = armOffsets[s.vrmBone];
+      }
+      if (mmdCfg.ik && hb) {
+        ik = { sceneQuat: currentVrm.scene.getWorldQuaternion(new THREE.Quaternion()) };
+        for (const side of ['left', 'right']) {
+          const cfg = MMD_IK[side];
+          if (!tracks[cfg.ik]) continue;   // dance doesn't use IK for this leg
+          const up = hb.getNormalizedBoneNode(cfg.upper);
+          const lo = hb.getNormalizedBoneNode(cfg.lower);
+          const ft = hb.getNormalizedBoneNode(cfg.foot);
+          if (!up || !lo || !ft) continue;
+          const hip = up.getWorldPosition(new THREE.Vector3());
+          const knee = lo.getWorldPosition(new THREE.Vector3());
+          const ankle = ft.getWorldPosition(new THREE.Vector3());
+          ik[side] = {
+            up, lo, ft,
+            ankleRest: ankle.clone(),
+            L1: hip.distanceTo(knee),
+            L2: knee.distanceTo(ankle),
+          };
+        }
+      }
+
+      // Morphs -> per-expression sorted keyframes.
+      const morphs = new Map();
+      const mg = {};
+      for (const m of (vmd.morphs || [])) (mg[m.morphName] = mg[m.morphName] || []).push(m);
+      for (const [jp, list] of Object.entries(mg)) {
+        const expr = MMD_MORPH_MAP[jp];
+        if (!expr) continue;
+        list.sort((a, b) => a.frameNum - b.frameNum);
+        const keys = list.map((m) => { const t = m.frameNum / MMD_FPS; maxT = Math.max(maxT, t); return { t, w: m.weight }; });
+        const prev = morphs.get(expr) || [];
+        morphs.set(expr, prev.concat(keys).sort((a, b) => a.t - b.t));
+      }
+
+      // Optional camera track.
+      let camKeys = [];
+      if (payload.camera) {
+        try {
+          const cbuf = await (await fetch(payload.camera)).arrayBuffer();
+          const cam = parser.parseVmd(cbuf);
+          camKeys = (cam.cameras || []).slice().sort((a, b) => a.frameNum - b.frameNum)
+            .map((c) => { const t = c.frameNum / MMD_FPS; maxT = Math.max(maxT, t); return {
+              t, distance: c.distance, target: _convPos(c.position),
+              rot: c.rotation, fov: c.fov,
+            }; });
+        } catch (e) { logMessage('MMD: camera load failed (ignored).'); }
+      }
+
+      // Optional audio. Browsers block autoplay until the page gets a user
+      // gesture, so if play() is rejected we surface a one-click unlock button.
+      if (payload.audio) {
+        mmdAudio = new Audio(payload.audio);
+        mmdAudio.loop = !!payload.loop;
+        mmdAudio.crossOrigin = 'anonymous';
+        tryPlayMmdAudio();
+      }
+
+      mmd = { tracks, simple, torso, hipsBase, ik, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop };
+      const ikLegs = ik ? ['left', 'right'].filter((s) => ik[s]).length : 0;
+      logMessage(`MMD: playing (${simple.length} bones + torso, ${ikLegs} IK legs, ${morphs.size} morphs, ${camKeys.length} cam keys, ${maxT.toFixed(1)}s)`);
+      setModelStatus('Dancing (MMD)');
+    } catch (e) {
+      logMessage(`MMD load failed: ${e.message || e}`);
+      stopMmd(true);
+    }
+  }
+
+  let audioUnlocked = false;
+  const audioUnlockBtn = document.getElementById('audioUnlock');
+
+  function tryPlayMmdAudio() {
+    if (!mmdAudio) return;
+    const p = mmdAudio.play();
+    if (p && p.catch) {
+      p.then(() => { if (audioUnlockBtn) audioUnlockBtn.style.display = 'none'; })
+       .catch(() => {
+         // Autoplay blocked — show the unlock button so one click starts it.
+         logMessage('MMD: click "enable dance audio" (browser blocked autoplay).');
+         if (audioUnlockBtn) audioUnlockBtn.style.display = 'block';
+       });
+    }
+  }
+
+  // A single user gesture unlocks audio for the rest of the session.
+  function unlockAudio() {
+    audioUnlocked = true;
+    if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
+    if (mmdAudio) { try { mmdAudio.play(); } catch (e) {} }
+  }
+  if (audioUnlockBtn) audioUnlockBtn.addEventListener('click', unlockAudio);
+  window.addEventListener('pointerdown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
+  window.addEventListener('keydown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
+
+  // ── Live MMD tuning panel (non-transparent overlay) ──────────────────────────
+  function _mmdReapply() {
+    if (lastMmdPayload) startMmd(lastMmdPayload);
+  }
+  function _refreshTunePanel() {
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set('mt-axisval', mmdCfg.axis);
+    set('mt-kneeval', mmdCfg.knee > 0 ? 'Forward' : 'Backward');
+    set('mt-ikval', mmdCfg.ik ? 'On' : 'Off');
+    set('mt-armval', Math.round(mmdCfg.armDeg));
+    const axisWrap = document.getElementById('mt-axis');
+    if (axisWrap && !axisWrap.childElementCount) {
+      [0, 1, 2, 3].forEach((n) => {
+        const b = document.createElement('button');
+        b.textContent = n; b.style.cssText = 'flex:1;padding:6px';
+        b.onclick = () => { mmdCfg.axis = n; _lsSet('mmdAxis', n); _refreshTunePanel(); _mmdReapply(); };
+        axisWrap.appendChild(b);
+      });
+    }
+  }
+  function _setupTunePanel() {
+    const panel = document.getElementById('mmdTune');
+    if (!panel || TRANSPARENT) return;     // hidden in OBS overlay mode
+    panel.style.display = 'block';
+    panel.querySelectorAll('[data-knee]').forEach((b) => b.onclick = () => {
+      mmdCfg.knee = parseFloat(b.dataset.knee); _lsSet('mmdKnee', mmdCfg.knee); _refreshTunePanel(); _mmdReapply();
+    });
+    panel.querySelectorAll('[data-ik]').forEach((b) => b.onclick = () => {
+      mmdCfg.ik = b.dataset.ik === '1'; _lsSet('mmdIK', mmdCfg.ik ? '1' : '0'); _refreshTunePanel(); _mmdReapply();
+    });
+    const armSet = (d) => { mmdCfg.armDeg = Math.max(-90, Math.min(90, mmdCfg.armDeg + d)); _lsSet('mmdArm', mmdCfg.armDeg); _refreshTunePanel(); _mmdReapply(); };
+    const dn = document.getElementById('mt-arm-dn'); if (dn) dn.onclick = () => armSet(-5);   // less down
+    const upb = document.getElementById('mt-arm-up'); if (upb) upb.onclick = () => armSet(5);  // more down
+    const rep = document.getElementById('mt-replay'); if (rep) rep.onclick = _mmdReapply;
+    _refreshTunePanel();
+  }
+  _setupTunePanel();
+
+  function stopMmd(restore = true) {
+    if (mmdAudio) { try { mmdAudio.pause(); } catch (e) {} mmdAudio = null; }
+    if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
+    if (!mmd) return;
+    // Restore the hips base position we moved.
+    if (mmd.torso && mmd.torso.hips && mmd.hipsBase) mmd.torso.hips.position.copy(mmd.hipsBase);
+    mmd = null;
+    if (restore && currentVrm) {
+      applyRestPoseImmediate();
+      applyExpression(currentEmotion);
+      frameAvatar();
+      setModelStatus('Loaded');
+    }
+  }
+
+  function updateMmd() {
+    if (!mmd || !currentVrm) return;
+    // Sync to audio when present so motion never drifts from the music.
+    let t = mmdAudio ? mmdAudio.currentTime : (clock.elapsedTime - mmd.start);
+    if (t >= mmd.duration) {
+      if (mmd.loop) { mmd.start = clock.elapsedTime; t = 0; if (mmdAudio) { try { mmdAudio.currentTime = 0; } catch (e) {} } }
+      else { stopMmd(true); return; }
+    }
+    const I = new THREE.Quaternion();
+    // Sample a torso bone's rotation/position by trying its name aliases.
+    const sampQ = (names) => {
+      for (const n of names) { const k = mmd.tracks[n]; if (k) { const r = _sample(k, t, 'quat'); if (r && r.q) return r.q; } }
+      return null;
+    };
+    const sampP = (names) => {
+      for (const n of names) { const k = mmd.tracks[n]; if (k) { const r = _sample(k, t, 'pos'); if (r && r.p) return r.p; } }
+      return null;
+    };
+
+    // Simple 1:1 bones (arms, legs, hands, head, …). Upper arms get the A-pose
+    // offset; their children inherit it through the hierarchy.
+    for (const s of mmd.simple) {
+      const r = _sample(mmd.tracks[s.jp], t, 'quat');
+      if (r && r.q) {
+        if (s.offset) s.node.quaternion.copy(s.offset).multiply(r.q);
+        else s.node.quaternion.copy(r.q);
+      }
+    }
+
+    // Torso retarget: MMD center/lower/upper bodies -> VRM hips/spine/chest.
+    // hips = root·center·groove·lower  (so legs, children of hips, follow the
+    // pelvis). spine = lower⁻¹·upper  (so the torso bends independently of the
+    // pelvis tilt, exactly as MMD's separate upper body does). chest = upper2.
+    const T = mmd.torso;
+    const root = sampQ(MMD_T.root) || I, ctr = sampQ(MMD_T.center) || I,
+          grv = sampQ(MMD_T.groove) || I, low = sampQ(MMD_T.lower) || I,
+          up = sampQ(MMD_T.upper) || I, up2 = sampQ(MMD_T.upper2);
+    if (T.hips) {
+      T.hips.quaternion.copy(root).multiply(ctr).multiply(grv).multiply(low);
+      if (mmd.hipsBase) {
+        const pos = mmd.hipsBase.clone();
+        const pr = sampP(MMD_T.root); if (pr) pos.add(pr);
+        const pc = sampP(MMD_T.center); if (pc) pos.add(pc);
+        const pg = sampP(MMD_T.groove); if (pg) pos.add(pg);
+        T.hips.position.copy(pos);
+      }
+    }
+    if (T.spine) T.spine.quaternion.copy(low).invert().multiply(up);
+    if (T.chest) T.chest.quaternion.copy(up2 || I);
+
+    // Leg IK: solve after the FK + torso so the hips are in their final place.
+    // The ankle target = rest ankle + the animated IK offset (feet stay planted
+    // while the hips move). Knee bends forward (pole = world forward).
+    if (mmd.ik) {
+      currentVrm.scene.updateMatrixWorld(true);
+      const pole = new THREE.Vector3(0, 0, mmdCfg.knee).applyQuaternion(mmd.ik.sceneQuat);
+      for (const side of ['left', 'right']) {
+        const leg = mmd.ik[side];
+        if (!leg) continue;
+        const off = sampP([MMD_IK[side].ik]);
+        if (!off) continue;
+        const target = leg.ankleRest.clone().add(off.clone().applyQuaternion(mmd.ik.sceneQuat));
+        const A = leg.up.getWorldPosition(new THREE.Vector3());
+        const B = _solveTwoBone(A, target, leg.L1, leg.L2, pole);
+        _aimBone(leg.up, A, B, _DOWN);
+        leg.up.updateWorldMatrix(true, false);
+        const Bw = leg.lo.getWorldPosition(new THREE.Vector3());
+        _aimBone(leg.lo, Bw, target, _DOWN);
+      }
+    }
+
+    // Morphs (reset known channels first so nothing sticks).
+    const em = currentVrm.expressionManager;
+    if (em) {
+      MMD_RESET_EXPR.forEach((e) => { try { em.setValue(e, 0); } catch (x) {} });
+      mmd.morphs.forEach((keys, expr) => {
+        const r = _sample(keys, t, 'morph');
+        if (r) { try { em.setValue(expr, Math.max(0, Math.min(1, r.w))); } catch (x) {} }
+      });
+    }
+    // Camera. MMD distance is in MMD units, so scale it to metres like
+    // positions (without this the camera sits ~12× too far → zoomed way out).
+    if (mmd.camKeys.length) {
+      const c = _sampleCamera(mmd.camKeys, t);
+      if (c) {
+        const e = new THREE.Euler(-c.rot[0], -c.rot[1], c.rot[2], 'YXZ');
+        const dir = new THREE.Vector3(0, 0, 1).applyEuler(e);
+        const target = c.target.clone();
+        camera.position.copy(target).add(dir.multiplyScalar(Math.abs(c.distance) * MMD_POS_SCALE));
+        camera.lookAt(target);
+        if (c.fov) { camera.fov = Math.max(10, Math.min(80, c.fov)); camera.updateProjectionMatrix(); }
+      }
+    }
+  }
+
+  function _sampleCamera(keys, t) {
+    if (!keys.length) return null;
+    if (t <= keys[0].t) return keys[0];
+    if (t >= keys[keys.length - 1].t) return keys[keys.length - 1];
+    let lo = 0, hi = keys.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; (keys[mid].t <= t ? lo = mid : hi = mid); }
+    const a = keys[lo], b = keys[hi];
+    const f = (t - a.t) / Math.max(1e-6, b.t - a.t);
+    return {
+      distance: a.distance + (b.distance - a.distance) * f,
+      target: a.target.clone().lerp(b.target, f),
+      rot: [0, 1, 2].map((i) => a.rot[i] + (b.rot[i] - a.rot[i]) * f),
+      fov: a.fov + (b.fov - a.fov) * f,
+    };
+  }
+
   function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
@@ -404,19 +1007,37 @@
     if (currentVrm) {
       const em = currentVrm.expressionManager;
 
-      // Lip-sync: smoothly chase the amplitude target; decay when not speaking.
-      mouthCurrent += (mouthTarget - mouthCurrent) * Math.min(1, delta * 18);
-      if (!speaking) mouthTarget *= 0.85;
-      if (em) {
-        try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
-      }
+      if (mmd) {
+        // MMD fully drives bones + morphs (+ camera) while a dance plays.
+        updateMmd();
+      } else {
+        // Lip-sync: prefer real TTS amplitude; if none is arriving while she's
+        // speaking (e.g. an external player that can't report levels), fall back
+        // to a synthetic talking oscillation so the mouth still moves.
+        if (speaking) {
+          const freshAmplitude = (performance.now() - lastVisemeAt) < 350;
+          if (!freshAmplitude) {
+            mouthTarget = 0.18 + 0.55 * Math.abs(Math.sin(t * 9.5)) * (0.6 + 0.4 * Math.sin(t * 2.3));
+          }
+        } else {
+          mouthTarget *= 0.85;
+        }
+        mouthCurrent += (mouthTarget - mouthCurrent) * Math.min(1, delta * 18);
+        if (em) {
+          try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
+        }
 
-      // Body pose (rest pose + emotion + idle) and periodic blink.
-      updatePose(delta, t);
-      if (em) {
-        const phase = t % 4.0;
-        const blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
-        try { em.setValue('blink', blink); } catch (e) {}
+        // Body pose (rest pose + emotion + idle) and periodic blink.
+        updatePose(delta, t);
+        if (em) {
+          // Eyes stay shut while sleeping; otherwise blink periodically.
+          let blink = 1;
+          if (!lyingDown) {
+            const phase = t % 4.0;
+            blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+          }
+          try { em.setValue('blink', blink); } catch (e) {}
+        }
       }
 
       currentVrm.update(delta);
@@ -504,6 +1125,7 @@
 
       if (payload.type === 'viseme') {
         mouthTarget = Math.max(0, Math.min(1, payload.mouth || 0));
+        lastVisemeAt = performance.now();
       }
 
       if (payload.type === 'speaking') {
@@ -518,6 +1140,11 @@
       if (payload.type === 'dance') {
         dancing = !!payload.on;
         logMessage(dancing ? 'Dancing to the music!' : 'Stopped dancing.');
+      }
+
+      if (payload.type === 'mmd') {
+        if (payload.action === 'play') startMmd(payload);
+        else if (payload.action === 'stop') stopMmd(true);
       }
 
       if (payload.type === 'reminder') {

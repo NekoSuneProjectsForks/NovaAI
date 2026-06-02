@@ -141,6 +141,7 @@ tailwind.config = {
       <button onclick="showPage('chat')"        data-page="chat"        class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128172;</span> Chat</button>
       <button onclick="showPage('stream')"      data-page="stream"      class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128250;</span> Stream</button>
       <button onclick="showPage('avatar')"      data-page="avatar"      class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#129302;</span> Avatar</button>
+      <button onclick="showPage('mmd')"         data-page="mmd"         class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128131;</span> MMD</button>
       <button onclick="showPage('game')"        data-page="game"        class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#127918;</span> Game</button>
       <button onclick="showPage('reminders')"   data-page="reminders"   class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128276;</span> Reminders</button>
       <button onclick="showPage('calendar')"    data-page="calendar"    class="nav-item w-full text-left px-5 py-2.5 text-[13px] text-nova-muted2 border-l-[3px] border-transparent flex items-center gap-2.5"><span class="w-5 text-center opacity-70">&#128197;</span> Calendar</button>
@@ -289,6 +290,28 @@ tailwind.config = {
 
         <div class="card p-5">
           <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Alerts &amp; Tips (Stockings)</div>
+            <button onclick="loadEarnings()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
+          </div>
+          <div id="earnings-box" class="text-[12px] text-nova-muted mb-3">Loading…</div>
+          <div class="text-[11px] text-nova-muted mb-1">Test reactions (fires expression + cute message):</div>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <button onclick="doSimAlert('donation', 5)" class="btn-secondary px-3 py-1 rounded text-[11px]">Donation $5</button>
+            <button onclick="doSimAlert('follow')" class="btn-secondary px-3 py-1 rounded text-[11px]">Follow</button>
+            <button onclick="doSimAlert('subscription')" class="btn-secondary px-3 py-1 rounded text-[11px]">Sub</button>
+            <button onclick="doSimAlert('resub', 0, 6)" class="btn-secondary px-3 py-1 rounded text-[11px]">Resub x6</button>
+            <button onclick="doSimAlert('cheer', 100)" class="btn-secondary px-3 py-1 rounded text-[11px]">100 bits</button>
+            <button onclick="doSimAlert('raid')" class="btn-secondary px-3 py-1 rounded text-[11px]">Raid</button>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="openEarningsOverlay()" class="btn-primary px-3 py-1 rounded text-[11px]">Open Tips Overlay</button>
+            <button onclick="doResetEarnings()" class="btn-danger px-3 py-1 rounded text-[11px]">Reset Tips</button>
+          </div>
+          <div class="text-[11px] text-nova-muted mt-2">Connect Streamlabs/StreamElements/Twitch or POST events to <code>/webhook/stream</code> from any bot (Tangia, sound alerts, …).</div>
+        </div>
+
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
             <div class="text-[13px] font-bold">Memory (what NovaAI is learning)</div>
             <button onclick="loadMemories()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
           </div>
@@ -333,15 +356,52 @@ tailwind.config = {
 
         <div class="card p-5">
           <div class="text-[13px] font-bold mb-3">Test Expressions &amp; Motion</div>
+          <div id="emotion-buttons" class="flex flex-wrap gap-2 mb-3"></div>
           <div class="flex flex-wrap gap-2">
-            <button onclick="doTestEmotion('happy')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Happy</button>
-            <button onclick="doTestEmotion('sad')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Sad</button>
-            <button onclick="doTestEmotion('angry')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Angry</button>
-            <button onclick="doTestEmotion('anxious')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Anxious</button>
-            <button onclick="doTestEmotion('neutral')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Neutral</button>
             <button onclick="doDance(true)" class="btn-primary px-3 py-1.5 rounded text-[12px]">Dance</button>
             <button onclick="doDance(false)" class="btn-secondary px-3 py-1.5 rounded text-[12px]">Stop Dance</button>
           </div>
+          <div class="text-[11px] text-nova-muted mt-2">Blush, shy, love, wink &amp; flirty need a VRM with those blendshapes — otherwise they fall back to a matching expression + pose.</div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- PAGE: MMD -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <div id="page-mmd" class="page flex-col h-full overflow-y-auto p-6 gap-5">
+        <div class="card p-5">
+          <div class="text-[13px] font-bold mb-3">Add a Dance</div>
+          <div class="text-[11px] text-nova-muted mb-3">A dance is one bundle: a <b>.vmd</b> motion (required) + an optional song (.mp3/.wav/.ogg/.m4a) + an optional <b>.vmd</b> camera — uploaded together as one row.</div>
+          <div class="flex flex-col gap-2 mb-3 max-w-[560px]">
+            <input id="mmd-name" type="text" placeholder="Dance name…" class="w-full" />
+            <div class="flex items-center gap-2 text-[12px]">
+              <button onclick="pickMmd('motion')" class="btn-secondary px-3 py-1.5 rounded w-[150px] text-left">🎬 Motion (.vmd)</button>
+              <span id="mmd-pick-motion" class="text-nova-muted truncate flex-1">required</span>
+            </div>
+            <div class="flex items-center gap-2 text-[12px]">
+              <button onclick="pickMmd('song')" class="btn-secondary px-3 py-1.5 rounded w-[150px] text-left">🎵 Song</button>
+              <span id="mmd-pick-song" class="text-nova-muted truncate flex-1">optional</span>
+            </div>
+            <div class="flex items-center gap-2 text-[12px]">
+              <button onclick="pickMmd('camera')" class="btn-secondary px-3 py-1.5 rounded w-[150px] text-left">🎥 Camera (.vmd)</button>
+              <span id="mmd-pick-camera" class="text-nova-muted truncate flex-1">optional</span>
+            </div>
+          </div>
+          <input id="mmd-file-input" type="file" class="hidden" onchange="onMmdFileChosen(event)" />
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="doAddDance()" class="btn-primary px-4 py-2 rounded text-[12px] font-semibold">Add Dance</button>
+            <button onclick="doStopMmd()" class="btn-danger px-4 py-2 rounded text-[12px]">⏹ Stop</button>
+            <label class="flex items-center gap-2 text-[12px] ml-2"><input type="checkbox" id="mmd-loop" class="w-4 h-4 rounded accent-violet-500" /> Loop on play</label>
+          </div>
+          <div id="mmd-status" class="text-[11px] text-nova-muted mt-2"></div>
+        </div>
+
+        <div class="card p-5 flex-1">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">Your Dances</div>
+            <button onclick="loadMmd()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
+          </div>
+          <div id="mmd-list" class="space-y-2 text-[12px]"><span class="text-nova-muted">No dances yet.</span></div>
         </div>
       </div>
 
@@ -490,7 +550,10 @@ tailwind.config = {
           <div class="flex gap-2">
             <input id="prof-name" type="text" placeholder="Profile name..." class="flex-1" />
             <button onclick="doCreateProfile()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Create</button>
+            <button onclick="doImportProfile()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold" title="Import a profile exported from another NovaAI (e.g. your PC)">Import</button>
           </div>
+          <input id="prof-import-file" type="file" accept=".json,application/json" class="hidden" onchange="onProfileFileChosen(event)" />
+          <div class="text-[11px] text-nova-muted mt-2">Export a profile below to move it between machines (e.g. your PC &rarr; Pi), then Import it here.</div>
         </div>
         <div class="card p-5 flex-1">
           <div class="text-[13px] font-bold mb-3">Profiles</div>
@@ -697,6 +760,7 @@ const PAGE_META = {
   chat:      ['Chat',      'Conversation with your companion'],
   stream:    ['Stream',    'Twitch chat and memory'],
   avatar:    ['Avatar',    'VRM avatar and lip-sync'],
+  mmd:       ['MMD',       'Upload & play MMD dances'],
   game:      ['Game',      'Autonomous game playing'],
   reminders: ['Reminders', 'Reminders and alarms'],
   calendar:  ['Calendar',  'Upcoming events'],
@@ -722,6 +786,7 @@ function showPage(key) {
   if (!_appReady) return;
   if (key === 'stream')     loadStream();
   if (key === 'avatar')     loadAvatar();
+  if (key === 'mmd')        loadMmd();
   if (key === 'game')       loadGame();
   if (key === 'reminders')  loadReminders();
   if (key === 'calendar')   loadCalendar();
@@ -975,7 +1040,42 @@ async function loadStream() {
     $('stream-mode').textContent = s.reply_mode + (s.authenticated ? ' · can post' : ' · read-only');
   } catch(e) { console.error(e); }
   loadMemories();
+  loadEarnings();
 }
+
+// ── Alerts & tips ("stockings") ────────────────────────────────────────────
+const CUR_SYM = { USD:'$', GBP:'£', EUR:'€', CAD:'$', AUD:'$', JPY:'¥' };
+function fmtMoney(n, cur) {
+  const s = CUR_SYM[(cur||'USD').toUpperCase()] || '';
+  const v = Math.round((n||0)*100)/100;
+  return s + (v === Math.floor(v) ? v.toFixed(0) : v.toFixed(2));
+}
+async function loadEarnings() {
+  try {
+    const e = await api().get_earnings();
+    const box = $('earnings-box');
+    if (!box) return;
+    const last = e.last && e.last.user ? ` · last: ${escHtml(e.last.user)} (${fmtMoney(e.last.amount, e.currency)})` : '';
+    box.innerHTML = `<span class="text-nova-text font-semibold">All-time ${fmtMoney(e.all_time, e.currency)}</span> · today ${fmtMoney(e.today, e.currency)} · session ${fmtMoney(e.session, e.currency)} · ${e.count||0} tips${last}`;
+  } catch(e) { console.error(e); }
+}
+async function doSimAlert(type, amount, months) {
+  try { await api().simulate_stream_event(type, 'TestViewer', amount||0, months||0); setTimeout(loadEarnings, 300); }
+  catch(e) { console.error(e); }
+}
+async function doResetEarnings() {
+  if (!confirm('Reset the tips total?')) return;
+  try { await api().reset_earnings('all'); loadEarnings(); } catch(e) { console.error(e); }
+}
+function openEarningsOverlay() {
+  // Served by the web server at the same origin (use this URL as an OBS source).
+  if (location.protocol === 'file:') {
+    showNotification('Open the tips overlay from web mode (python app.py --web): http://<host>:8800/overlay/earnings');
+    return;
+  }
+  window.open('/overlay/earnings', '_blank');
+}
+window.__onEarnings = loadEarnings;
 
 async function doStartStream() {
   try { const r = await api().start_stream(); if (r && !r.ok) showNotification(r.msg); loadStream(); } catch(e) { console.error(e); }
@@ -1017,10 +1117,39 @@ async function doSing() {
   try { const r = await api().sing(lyrics, ref); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
 }
 
+// ── Service URLs ───────────────────────────────────────────────────────────
+// Sibling services (avatar overlay :8766, Minecraft live view :8768) live on
+// their own ports. Build their URLs from THIS page's location so they match
+// however you reached NovaAI — LAN IP, Tailscale, or a Cloudflare tunnel host.
+// In the desktop GUI the page is file://, so fall back to the backend URL.
+function serviceUrl(port, path, fallbackUrl) {
+  if (!port || location.protocol === 'file:' || !location.hostname) return fallbackUrl || '';
+  const proto = location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${proto}//${location.hostname}:${port}${path || '/'}`;
+}
+
 // ── Avatar ─────────────────────────────────────────────────────────────────
+
+// Expression test buttons — must mirror EMOTION_MAP in static/avatar.html.
+const AVATAR_EMOTIONS = [
+  'neutral', 'happy', 'excited', 'laugh', 'proud', 'smug',
+  'blush', 'shy', 'love', 'flirty', 'wink',
+  'sad', 'cry', 'pout', 'angry', 'anxious', 'scared',
+  'surprised', 'shocked', 'confused', 'relaxed', 'calm', 'sleepy', 'sleeping',
+];
+
+function renderEmotionButtons() {
+  const wrap = $('emotion-buttons');
+  if (!wrap || wrap.childElementCount) return;   // build once
+  wrap.innerHTML = AVATAR_EMOTIONS.map((em) => {
+    const label = em.charAt(0).toUpperCase() + em.slice(1);
+    return `<button onclick="doTestEmotion('${em}')" class="btn-secondary px-3 py-1.5 rounded text-[12px]">${label}</button>`;
+  }).join('');
+}
 
 async function loadAvatar() {
   try {
+    renderEmotionButtons();
     const s = await api().get_avatar_status();
     const badge = $('avatar-badge');
     badge.textContent = s.running ? 'Running' : (s.enabled ? 'Enabled' : 'Off');
@@ -1031,12 +1160,108 @@ async function loadAvatar() {
   } catch(e) { console.error(e); }
 }
 
+// ── MMD dances ─────────────────────────────────────────────────────────────
+// Files chosen for the dance currently being assembled (before "Add Dance").
+const _mmdPending = { motion: null, song: null, camera: null };
+function pickMmd(kind) {
+  const inp = $('mmd-file-input');
+  inp.dataset.kind = kind;
+  inp.accept = kind === 'song' ? '.mp3,.wav,.ogg,.m4a,audio/*' : '.vmd';
+  inp.value = '';
+  inp.click();
+}
+function onMmdFileChosen(event) {
+  const file = event.target.files && event.target.files[0];
+  const kind = event.target.dataset.kind || 'motion';
+  if (!file) return;
+  _mmdPending[kind] = file;
+  const span = $('mmd-pick-' + kind);
+  if (span) { span.textContent = file.name; span.classList.remove('text-nova-muted'); span.classList.add('text-nova-text'); }
+}
+function _readFileB64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+async function doAddDance() {
+  const name = ($('mmd-name').value || '').trim();
+  if (!_mmdPending.motion) { showNotification('Pick a .vmd motion first.'); return; }
+  $('mmd-status').textContent = 'Uploading dance…';
+  try {
+    const created = await api().create_mmd_set(name || _mmdPending.motion.name.replace(/\.vmd$/i, ''));
+    if (!created || !created.ok) { showNotification((created && created.msg) || 'Failed.'); $('mmd-status').textContent=''; return; }
+    const id = created.id;
+    for (const kind of ['motion', 'song', 'camera']) {
+      const f = _mmdPending[kind];
+      if (!f) continue;
+      const b64 = await _readFileB64(f);
+      const up = await api().upload_mmd_file(id, kind, f.name, b64);
+      if (!up || !up.ok) { showNotification(`${kind}: ${(up && up.msg) || 'upload failed'}`); }
+    }
+    // reset the form
+    _mmdPending.motion = _mmdPending.song = _mmdPending.camera = null;
+    $('mmd-name').value = '';
+    ['motion','song','camera'].forEach(k => { const s=$('mmd-pick-'+k); if(s){ s.textContent = k==='motion'?'required':'optional'; s.classList.add('text-nova-muted'); s.classList.remove('text-nova-text'); } });
+    $('mmd-status').textContent = 'Dance added.';
+    loadMmd();
+  } catch(e) { console.error(e); showNotification('Upload failed.'); $('mmd-status').textContent=''; }
+}
+function _mmdBadge(on, label) {
+  return `<span class="px-1.5 py-0.5 rounded text-[10px] ${on ? 'bg-violet-500/25 text-violet-200' : 'bg-nova-surface text-nova-muted'}">${label}</span>`;
+}
+async function loadMmd() {
+  try {
+    const sets = await api().list_mmd_sets();
+    const el = $('mmd-list');
+    if (!el) return;
+    if (!sets || !sets.length) { el.innerHTML = '<span class="text-nova-muted">No dances yet.</span>'; return; }
+    el.innerHTML = sets.map(s => `
+      <div class="flex items-center justify-between gap-3 py-2.5 px-3 rounded-lg bg-nova-surface2 border border-nova-border">
+        <div class="min-w-0">
+          <div class="font-medium text-nova-text truncate" title="${escAttr(s.name)}">${escHtml(s.name)}</div>
+          <div class="flex gap-1.5 mt-1">${_mmdBadge(s.has_motion,'🎬 motion')}${_mmdBadge(s.has_song,'🎵 song')}${_mmdBadge(s.has_camera,'🎥 camera')}</div>
+        </div>
+        <span class="flex gap-2 shrink-0">
+          <button onclick="doPlayDance('${escAttr(s.id)}')" class="btn-primary px-3 py-1 rounded text-[11px]">Play</button>
+          <button onclick="doDeleteDance('${escAttr(s.id)}','${escAttr(s.name)}')" class="btn-danger px-3 py-1 rounded text-[11px]">Delete</button>
+        </span>
+      </div>`).join('');
+  } catch(e) { console.error(e); }
+}
+async function doPlayDance(id) {
+  const loop = !!($('mmd-loop')||{}).checked;
+  try {
+    const r = await api().play_mmd_set(id, loop);
+    if (r && !r.ok && r.msg) showNotification(r.msg);
+    else $('mmd-status').textContent = 'Playing on the avatar…';
+  } catch(e) { console.error(e); }
+}
+async function doDeleteDance(id, name) {
+  if (!confirm(`Delete dance "${name}"?`)) return;
+  try { await api().delete_mmd_set(id); loadMmd(); } catch(e) { console.error(e); }
+}
+async function doStopMmd() {
+  try { await api().stop_mmd(); $('mmd-status').textContent = 'Stopped.'; } catch(e) { console.error(e); }
+}
+
 async function doStartAvatar() {
   try { const r = await api().start_avatar(); if (r && !r.ok && r.msg) showNotification(r.msg); loadAvatar(); } catch(e) { console.error(e); }
 }
 async function doStopAvatar() { try { await api().stop_avatar(); loadAvatar(); } catch(e) { console.error(e); } }
 async function doOpenAvatarWindow() {
-  try { const r = await api().open_avatar_window(); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
+  try {
+    const r = await api().open_avatar_window();
+    if (r && !r.ok && r.msg) { showNotification(r.msg); return; }
+    // Web mode: open client-side so the URL matches this host. GUI mode: the
+    // backend already opened it on the local machine.
+    if (r && r.ok && location.protocol !== 'file:') {
+      const u = serviceUrl(r.port, r.path, r.url);
+      if (u) window.open(u, '_blank');
+    }
+  } catch(e) { console.error(e); }
 }
 async function doAvatarToggle(key, val) { try { await api().set_avatar_option(key, val); } catch(e) { console.error(e); } }
 async function doTestEmotion(em) { try { const r = await api().test_avatar_emotion(em); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
@@ -1162,7 +1387,18 @@ async function doStartGame() {
   try { const r = await api().start_game($('game-goal').value || '', driver); if (r && !r.ok && r.msg) showNotification(r.msg); loadGame(); } catch(e) { console.error(e); }
 }
 async function doStopGame() { try { await api().stop_game(); loadGame(); } catch(e) { console.error(e); } }
-async function doOpenGameView() { try { const r = await api().open_game_view(); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }
+async function doOpenGameView() {
+  try {
+    const r = await api().open_game_view();
+    if (r && !r.ok && r.msg) { showNotification(r.msg); return; }
+    // Web mode: open client-side so the URL matches this host. GUI mode: the
+    // backend already opened it on the local machine.
+    if (r && r.ok && location.protocol !== 'file:') {
+      const u = serviceUrl(r.port, '/', r.url);
+      if (u) window.open(u, '_blank');
+    }
+  } catch(e) { console.error(e); }
+}
 async function doSetGameGoal() {
   try { const r = await api().set_game_goal($('game-goal').value || ''); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); }
 }
@@ -1413,6 +1649,7 @@ async function loadProfiles() {
         </div>
         <div class="flex gap-2">
           ${!active ? `<button onclick="doSwitchProfile('${p.profile_id}')" class="btn-primary px-3 py-1 rounded text-[11px]">Activate</button>` : ''}
+          <button onclick="doExportProfile('${p.profile_id}')" class="btn-secondary px-3 py-1 rounded text-[11px]">Export</button>
           <button onclick="doCloneProfile('${p.profile_id}','${escAttr(p.profile_name)}')" class="btn-secondary px-3 py-1 rounded text-[11px]">Clone</button>
           ${!active ? `<button onclick="doDeleteProfile('${p.profile_id}')" class="btn-danger px-3 py-1 rounded text-[11px]">Delete</button>` : ''}
         </div>
@@ -1437,6 +1674,42 @@ async function doCloneProfile(id, name) {
 async function doDeleteProfile(id) {
   if (!confirm('Delete this profile?')) return;
   try { await api().delete_profile_item(id); loadProfiles(); } catch(e) { console.error(e); }
+}
+
+async function doExportProfile(id) {
+  try {
+    const r = await api().export_profile(id);
+    if (!r || !r.ok) { showNotification((r && r.msg) || 'Export failed.'); return; }
+    // Download client-side so the file lands on the device you're browsing from.
+    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = r.filename || 'profile.nova-profile.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(e) { console.error(e); showNotification('Export failed.'); }
+}
+
+function doImportProfile() {
+  const inp = $('prof-import-file');
+  if (inp) { inp.value = ''; inp.click(); }
+}
+
+async function onProfileFileChosen(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    let data;
+    try { data = JSON.parse(text); } catch(_) { showNotification('That file is not valid JSON.'); return; }
+    const r = await api().import_profile(data, '');
+    if (!r || !r.ok) { showNotification((r && r.msg) || 'Import failed.'); return; }
+    showNotification('Imported profile: ' + (r.profile_name || r.profile_id));
+    loadProfiles();
+  } catch(e) { console.error(e); showNotification('Import failed.'); }
 }
 
 // ── Settings: audio ──────────────────────────────────────────────────────

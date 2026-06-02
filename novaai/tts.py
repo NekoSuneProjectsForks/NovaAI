@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import threading
+import time
 import wave
 from io import BytesIO
 from dataclasses import dataclass
@@ -12,11 +13,36 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import sounddevice as sd
-import torch
-from TTS.api import TTS
 
-from .audio_input import get_hostapi_names, normalize_audio_device_name
+# sounddevice (PortAudio), torch and coqui-tts (TTS) are optional voice extras.
+# Guard them so this module imports text-only (CLI / headless web) on machines
+# without speakers or the heavy ML stack (e.g. a headless Raspberry Pi). The
+# functions that actually synthesize/play audio call the _require_* helpers.
+try:
+    import sounddevice as sd
+except (ImportError, OSError):  # OSError: PortAudio shared lib missing
+    sd = None  # type: ignore[assignment]
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
+try:
+    from TTS.api import TTS
+except ImportError:
+    TTS = None  # type: ignore[assignment]
+
+from .audio_input import (
+    VOICE_EXTRAS_HINT,
+    _require_audio,
+    get_hostapi_names,
+    normalize_audio_device_name,
+)
+
+
+def _require_xtts() -> None:
+    """Raise a friendly error if the local XTTS stack (coqui-tts + torch) is absent."""
+    if TTS is None or torch is None:
+        raise RuntimeError(VOICE_EXTRAS_HINT)
 from .config import Config
 from .models import SessionState
 from .paths import AUDIO_DIR, ROOT_DIR, XTTS_STREAM_END
@@ -47,12 +73,14 @@ def resolve_optional_path(path_value: str | None) -> Path | None:
 
 
 def get_xtts_device(config: Config) -> str:
-    if config.xtts_use_gpu and torch.cuda.is_available():
+    if config.xtts_use_gpu and torch is not None and torch.cuda.is_available():
         return "cuda"
     return "cpu"
 
 
 def get_default_output_device_index() -> int | None:
+    if sd is None:
+        return None
     default_device = sd.default.device
     if isinstance(default_device, (list, tuple)):
         if len(default_device) < 2:
@@ -191,6 +219,8 @@ def choose_compatible_output_device_index(
 
 
 def list_output_devices_compact(max_devices: int = 24) -> list[dict[str, Any]]:
+    if sd is None:
+        return []
     try:
         devices = sd.query_devices()
     except Exception as exc:
@@ -488,7 +518,8 @@ def resample_audio_for_output(
     return np.ascontiguousarray(resampled, dtype=np.float32)
 
 
-def ensure_xtts_model(config: Config, state: SessionState) -> TTS:
+def ensure_xtts_model(config: Config, state: SessionState) -> "TTS":
+    _require_xtts()
     desired_device = get_xtts_device(config)
     if state.xtts_model is None or state.xtts_device != desired_device:
         model = TTS(config.xtts_model_name, progress_bar=False)
@@ -1085,16 +1116,99 @@ def _play_with_ffplay(audio_path: Path) -> None:
     )
 
 
+def _decode_audio_mono(audio_path: Path) -> tuple[np.ndarray | None, int]:
+    """Decode an audio file to mono float32 samples + sample rate.
+
+    WAV is read directly; other formats (e.g. gTTS .mp3) go through ffmpeg, which
+    is already present whenever ffplay is used for fallback playback.
+    """
+    suffix = audio_path.suffix.lower()
+    if suffix == ".wav":
+        try:
+            with wave.open(str(audio_path), "rb") as wav_file:
+                channels = wav_file.getnchannels()
+                sample_rate = wav_file.getframerate()
+                frames = wav_file.readframes(wav_file.getnframes())
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            if channels > 1:
+                audio = audio.reshape(-1, channels).mean(axis=1)
+            return audio, sample_rate
+        except Exception:
+            return None, 0
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    ffmpeg = _shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None, 0
+    try:
+        out = _subprocess.run(
+            [ffmpeg, "-v", "quiet", "-i", str(audio_path),
+             "-f", "s16le", "-ac", "1", "-ar", "22050", "-"],
+            capture_output=True, check=True,
+        ).stdout
+        if not out:
+            return None, 0
+        return np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0, 22050
+    except Exception:
+        return None, 0
+
+
+def _emit_amplitude_envelope(audio_path: Path, on_amplitude: Any) -> None:
+    """Decode the file and emit its RMS envelope on a wall clock (~25 fps).
+
+    Drives lip-sync when the actual playback happens in an external player
+    (ffplay/MCI) that can't report amplitude itself. Runs in its own thread,
+    started at the same time as playback so the envelope tracks the audio.
+    """
+    if on_amplitude is None:
+        return
+    samples, sample_rate = _decode_audio_mono(audio_path)
+    if samples is None or samples.size == 0:
+        return
+    hop = max(1, int(sample_rate * 0.04))  # 40 ms ≈ 25 fps
+    nblocks = max(1, samples.size // hop)
+    start = time.monotonic()
+    try:
+        for i in range(nblocks):
+            wait = start + i * 0.04 - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            block = samples[i * hop:(i + 1) * hop]
+            if block.size == 0:
+                continue
+            rms = float(np.sqrt(np.mean(np.square(block, dtype=np.float64))))
+            on_amplitude(max(0.0, min(1.0, rms * 6.0)))
+        on_amplitude(0.0)
+    except Exception:
+        pass
+
+
 def play_audio_file(
     audio_path: Path,
     output_device_index: int | None = None,
     on_amplitude: Any = None,
 ) -> None:
-    if audio_path.suffix.lower() == ".wav":
+    if audio_path.suffix.lower() == ".wav" and sd is not None:
         play_wav_with_sounddevice(audio_path, output_device_index, on_amplitude)
         return
 
-    if os.name == "nt":
-        _play_with_mci(audio_path)
-    else:
-        _play_with_ffplay(audio_path)
+    # No sounddevice/PortAudio (minimal install), or a non-WAV file (e.g. gTTS
+    # .mp3): fall back to a system player. Those players can't report amplitude,
+    # so drive lip-sync from a decoded RMS envelope on a parallel thread.
+    envelope_thread: threading.Thread | None = None
+    if on_amplitude is not None:
+        envelope_thread = threading.Thread(
+            target=_emit_amplitude_envelope,
+            args=(audio_path, on_amplitude),
+            daemon=True,
+        )
+        envelope_thread.start()
+    try:
+        if os.name == "nt":
+            _play_with_mci(audio_path)
+        else:
+            _play_with_ffplay(audio_path)
+    finally:
+        if envelope_thread is not None:
+            envelope_thread.join(timeout=0.1)

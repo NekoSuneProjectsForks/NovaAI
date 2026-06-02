@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import socket
 import socketserver
 import threading
 from http import HTTPStatus
@@ -12,15 +14,34 @@ from urllib.parse import unquote
 
 try:
     import websockets
-    from websockets import WebSocketServerProtocol
+
+    try:
+        # Removed from the top-level namespace in websockets >= 14; used here
+        # only as a type annotation, so fall back to ``object`` when absent.
+        from websockets import WebSocketServerProtocol
+    except ImportError:  # pragma: no cover
+        WebSocketServerProtocol = object
 except ImportError:  # pragma: no cover
     websockets = None
     WebSocketServerProtocol = object
 
-from .paths import AVATAR_UPLOADS_DIR, ROOT_DIR, STATIC_DIR
+from .paths import AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
 
 # Generous cap for VRM uploads (they can be tens of MB).
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+
+def _local_ip() -> str:
+    """Best-effort LAN IP so we can show a reachable URL (no traffic sent)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "127.0.0.1"
 
 
 def _extract_boundary(content_type: str) -> str | None:
@@ -71,6 +92,27 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
             # Strip any path components to prevent directory traversal.
             local_path = AVATAR_UPLOADS_DIR / Path(raw_name).name
             self._serve_file(local_path, content_type="application/octet-stream")
+            return
+
+        if path.startswith("/mmd/"):
+            # Audio needs a real media MIME type or the browser won't play it.
+            audio_types = {
+                ".mp3": "audio/mpeg", ".wav": "audio/wav",
+                ".ogg": "audio/ogg", ".m4a": "audio/mp4",
+            }
+            parts = [p for p in unquote(path[len("/mmd/") :]).split("/") if p]
+            local_path = None
+            # /mmd/sets/<id>/<file> — a bundled dance (motion + song + camera).
+            if len(parts) == 3 and parts[0] == "sets":
+                local_path = MMD_DIR / "sets" / Path(parts[1]).name / Path(parts[2]).name
+            # /mmd/<kind>/<name> — legacy loose files.
+            elif len(parts) == 2 and parts[0] in {"motion", "audio", "camera"}:
+                local_path = MMD_DIR / parts[0] / Path(parts[1]).name
+            if local_path is not None:
+                ctype = audio_types.get(local_path.suffix.lower(), "application/octet-stream")
+                self._serve_file(local_path, content_type=ctype)
+                return
+            self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
@@ -199,11 +241,21 @@ class AvatarBridge:
     def __init__(
         self,
         on_vrm_loaded: Callable[[Path], None],
-        http_host: str = "127.0.0.1",
+        http_host: str | None = None,
         http_port: int = 8766,
         ws_port: int = 8765,
     ) -> None:
         self.on_vrm_loaded = on_vrm_loaded
+        # Bind host follows the launch mode: web mode sets NOVA_BIND_HOST to
+        # 0.0.0.0 so the avatar HTTP page and WebSocket bridge are reachable from
+        # the LAN, Tailscale, Cloudflare, etc.; the desktop GUI sets it to
+        # 127.0.0.1 (local-only). NOVA_AVATAR_HOST overrides just this service.
+        if http_host is None:
+            http_host = (
+                os.getenv("NOVA_AVATAR_HOST")
+                or os.getenv("NOVA_BIND_HOST")
+                or "0.0.0.0"
+            )
         self.http_host = http_host
         self.http_port = http_port
         self.ws_port = ws_port
@@ -250,10 +302,25 @@ class AvatarBridge:
         import asyncio
 
         asyncio.set_event_loop(self.ws_loop)
+
+        async def _serve() -> None:
+            # websockets >= 14 builds the server against the *running* loop, so
+            # serve() must be awaited from inside the loop (calling it before
+            # run_until_complete raises "no running event loop"). Awaiting the
+            # returned Server also works on the older (<14) API.
+            server = await websockets.serve(
+                self._ws_handler, self.http_host, self.ws_port
+            )
+            try:
+                await asyncio.Future()  # run until the loop is stopped
+            finally:
+                server.close()
+                await server.wait_closed()
+
         try:
-            start_server = websockets.serve(self._ws_handler, self.http_host, self.ws_port)
-            self.ws_loop.run_until_complete(start_server)
-            self.ws_loop.run_forever()
+            self.ws_loop.run_until_complete(_serve())
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
             print(f"[NovaAI Avatar] WebSocket bridge failed to start: {exc}")
 
@@ -277,7 +344,31 @@ class AvatarBridge:
     def _handle_upload(self, path: Path) -> None:
         self.on_vrm_loaded(path)
 
+    @staticmethod
+    def _to_servable_url(url: str) -> str:
+        """Turn any stored VRM reference into a URL the browser can fetch.
+
+        VRMs live in this install's uploads dir (``data/avatars``) and are served
+        at ``/uploads/<name>``. A profile may instead carry an absolute path from
+        another machine (e.g. an imported profile with a Windows path like
+        ``D:\\DEV\\NovaAI\\data\\avatars\\model.vrm``) — the browser can't fetch
+        that. Reduce anything that isn't already a web/relative URL to its
+        filename and serve it from wherever NovaAI is actually running.
+        """
+        if not url:
+            return url
+        u = str(url).strip()
+        if u.startswith(("http://", "https://", "/uploads/", "data:", "blob:")):
+            return u
+        # ntpath.basename splits on BOTH "/" and "\\", so it handles Windows
+        # paths even when NovaAI runs on Linux/macOS.
+        import ntpath
+
+        base = ntpath.basename(u)
+        return f"/uploads/{base}" if base else u
+
     def publish_avatar(self, url: str) -> None:
+        url = self._to_servable_url(url)
         self.current_avatar_url = url
         self._broadcast({"type": "avatar", "event": "load", "url": url})
 
@@ -291,6 +382,20 @@ class AvatarBridge:
         self._broadcast(
             {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
         )
+
+    def publish_mmd(self, motion_url: str, audio_url: str = "", camera_url: str = "", loop: bool = False) -> None:
+        """Tell the overlay to play an MMD dance (motion + optional audio/camera)."""
+        self._broadcast({
+            "type": "mmd",
+            "action": "play",
+            "motion": motion_url,
+            "audio": audio_url,
+            "camera": camera_url,
+            "loop": bool(loop),
+        })
+
+    def publish_mmd_stop(self) -> None:
+        self._broadcast({"type": "mmd", "action": "stop"})
 
     def publish_dance(self, on: bool) -> None:
         self._broadcast({"type": "dance", "on": bool(on)})
@@ -314,8 +419,14 @@ class AvatarBridge:
 
         asyncio.run_coroutine_threadsafe(send_all(), self.ws_loop)
 
+    def _advertised_host(self) -> str:
+        """A reachable host for URLs; 0.0.0.0/:: aren't connectable addresses."""
+        if self.http_host in {"0.0.0.0", "::", ""}:
+            return _local_ip()
+        return self.http_host
+
     def get_frontend_url(self) -> str:
-        return f"http://{self.http_host}:{self.http_port}/"
+        return f"http://{self._advertised_host()}:{self.http_port}/"
 
     def get_ws_url(self) -> str:
-        return f"ws://{self.http_host}:{self.ws_port}/"
+        return f"ws://{self._advertised_host()}:{self.ws_port}/"
