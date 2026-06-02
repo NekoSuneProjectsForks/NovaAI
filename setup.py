@@ -31,6 +31,7 @@ AUDIO_DIR = ROOT_DIR / "audio"
 REQUIREMENTS = ROOT_DIR / "requirements.txt"
 VOICE_REQUIREMENTS = ROOT_DIR / "requirements-voice.txt"
 GUI_REQUIREMENTS = ROOT_DIR / "requirements-gui.txt"
+STREAMING_REQUIREMENTS = ROOT_DIR / "requirements-streaming.txt"
 DEFAULT_OLLAMA_MODEL = "dolphin3"
 DEFAULT_OLLAMA_API_URL = "http://127.0.0.1:11434/api/chat"
 OPENAI_COMPATIBLE_PROVIDERS = {
@@ -164,12 +165,16 @@ def install_requirements() -> None:
         req_files.append(VOICE_REQUIREMENTS)
     if profile in {"gui", "full"} and GUI_REQUIREMENTS.exists():
         req_files.append(GUI_REQUIREMENTS)
+    # Live Streamlabs/StreamElements alerts need the Socket.IO / WebSocket
+    # clients — install them for every profile except the bare-minimum one.
+    if profile != "minimal" and STREAMING_REQUIREMENTS.exists():
+        req_files.append(STREAMING_REQUIREMENTS)
 
     labels = {
         "minimal": "base (text + web UI)",
-        "voice": "base + voice/ML extras",
-        "gui": "base + desktop GUI",
-        "full": "everything (voice + desktop GUI)",
+        "voice": "base + voice/ML + stream alerts",
+        "gui": "base + desktop GUI + stream alerts",
+        "full": "everything (voice + desktop GUI + stream alerts)",
     }
     print(f"    Installing packages [{labels[profile]}]...")
     cmd = [str(VENV_PYTHON), "-m", "pip", "install"]
