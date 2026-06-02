@@ -156,6 +156,8 @@
   <div style="display:flex;gap:4px;margin-bottom:8px"><button data-ik="1" style="flex:1;padding:6px">On</button><button data-ik="0" style="flex:1;padding:6px">Off</button></div>
   <div style="margin-bottom:6px">Arms down: <span id="mt-armval"></span>°</div>
   <div style="display:flex;gap:4px;margin-bottom:8px"><button id="mt-arm-dn" style="flex:1;padding:6px">− less</button><button id="mt-arm-up" style="flex:1;padding:6px">+ more</button></div>
+  <div style="margin-bottom:6px">Camera zoom: <span id="mt-zoomval"></span>×</div>
+  <div style="display:flex;gap:4px;margin-bottom:8px"><button id="mt-zoom-in" style="flex:1;padding:6px">− closer</button><button id="mt-zoom-out" style="flex:1;padding:6px">+ farther</button></div>
   <button id="mt-replay" style="width:100%;padding:8px;background:#7c4dff">Replay dance</button>
   <div style="margin-top:8px;font-size:11px;color:#9bb1c7">Settings save automatically. Tell the dev these numbers once it looks right.</div>
 </div>
@@ -556,6 +558,7 @@
     ik: _lsGet('mmdIK', (QUERY && QUERY.get('ik')) || '1') !== '0',
     armDeg: parseFloat(_lsGet('mmdArm', (QUERY && QUERY.get('armangle')) || '35')) || 0,
     knee: parseFloat(_lsGet('mmdKnee', '1')) || 1,   // +1 knees forward, -1 backward
+    zoom: parseFloat(_lsGet('mmdZoom', (QUERY && QUERY.get('mmdzoom')) || '1.35')) || 1.35,  // camera pull-back
   };
   // The torso is handled specially (see updateMmd): MMD splits it into upper
   // body (上半身) and lower body (下半身) both under the center, while VRM has a
@@ -845,6 +848,7 @@
     set('mt-kneeval', mmdCfg.knee > 0 ? 'Forward' : 'Backward');
     set('mt-ikval', mmdCfg.ik ? 'On' : 'Off');
     set('mt-armval', Math.round(mmdCfg.armDeg));
+    set('mt-zoomval', (mmdCfg.zoom || 1).toFixed(2));
     const axisWrap = document.getElementById('mt-axis');
     if (axisWrap && !axisWrap.childElementCount) {
       [0, 1, 2, 3].forEach((n) => {
@@ -868,6 +872,10 @@
     const armSet = (d) => { mmdCfg.armDeg = Math.max(-90, Math.min(90, mmdCfg.armDeg + d)); _lsSet('mmdArm', mmdCfg.armDeg); _refreshTunePanel(); _mmdReapply(); };
     const dn = document.getElementById('mt-arm-dn'); if (dn) dn.onclick = () => armSet(-5);   // less down
     const upb = document.getElementById('mt-arm-up'); if (upb) upb.onclick = () => armSet(5);  // more down
+    // Camera zoom updates live (no re-apply needed) — used by the camera each frame.
+    const zoomSet = (d) => { mmdCfg.zoom = Math.max(0.5, Math.min(4, (mmdCfg.zoom || 1) + d)); _lsSet('mmdZoom', mmdCfg.zoom); _refreshTunePanel(); };
+    const zin = document.getElementById('mt-zoom-in'); if (zin) zin.onclick = () => zoomSet(-0.15);   // closer
+    const zout = document.getElementById('mt-zoom-out'); if (zout) zout.onclick = () => zoomSet(0.15); // farther
     const rep = document.getElementById('mt-replay'); if (rep) rep.onclick = _mmdReapply;
     _refreshTunePanel();
   }
@@ -969,16 +977,20 @@
       });
     }
     // Camera. MMD distance is in MMD units, so scale it to metres like
-    // positions (without this the camera sits ~12× too far → zoomed way out).
+    // positions. Pull back a bit (mmdCfg.zoom) and use a tiny near plane so
+    // close clothes/geometry don't clip and vanish.
     if (mmd.camKeys.length) {
       const c = _sampleCamera(mmd.camKeys, t);
       if (c) {
         const e = new THREE.Euler(-c.rot[0], -c.rot[1], c.rot[2], 'YXZ');
         const dir = new THREE.Vector3(0, 0, 1).applyEuler(e);
         const target = c.target.clone();
-        camera.position.copy(target).add(dir.multiplyScalar(Math.abs(c.distance) * MMD_POS_SCALE));
+        const dist = Math.abs(c.distance) * MMD_POS_SCALE * (mmdCfg.zoom || 1);
+        camera.position.copy(target).add(dir.multiplyScalar(dist));
         camera.lookAt(target);
-        if (c.fov) { camera.fov = Math.max(10, Math.min(80, c.fov)); camera.updateProjectionMatrix(); }
+        camera.near = 0.01;   // avoid near-plane clipping when close
+        camera.fov = c.fov ? Math.max(10, Math.min(80, c.fov)) : camera.fov;
+        camera.updateProjectionMatrix();
       }
     }
   }
