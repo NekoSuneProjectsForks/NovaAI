@@ -25,13 +25,15 @@ Think Alexa, but with *attitude* and zero cloud lock-in. 🔥
 | 🎙️ | **Voice Input** | Local `faster-whisper` STT — no audio leaves your machine |
 | 🔊 | **Voice Output** | XTTS-v2 streamed synthesis with cloned voices (or Google TTS lite) |
 | 💜 | **Twitch Chat** | Reads your stream chat and replies in-character — Neuro-sama style |
+| 🎉 | **Stream Alerts & Tips** | Reacts to donations/follows/subs/raids with an expression + cute message, and a tips ("stockings") OBS overlay |
 | 🧬 | **Memory / Learning** | RAG long-term memory — remembers facts across sessions and gets better |
-| 🧍 | **VRM Avatar** | 3D avatar that lip-syncs, emotes, idles, dances, and plays **MMD** motions — OBS-ready |
+| 🧍 | **VRM Avatar** | 3D avatar that lip-syncs, emotes (20+), idles, dances, and plays **MMD** motions — OBS-ready |
 | 🎮 | **Game Playing** | Autonomously plays Minecraft (Mineflayer) + a universal vision driver |
 | 🎤 | **Singing** | Sings songs in its own voice over an auto-found YouTube instrumental |
 | 🌐 | **Web Search** | Manual or auto-triggered lookups via SearXNG / DuckDuckGo |
 | 🎵 | **Music & Radio** | SoundCloud search, internet radio, in-app playback |
 | ⏰ | **Reminders & Alarms** | Natural language: *"remind me to call mum at 3pm"* |
+| 🕐 | **Date & Time** | Answers *"what time/day/date is it"* instantly (no LLM round-trip) |
 | 📋 | **To-Do & Shopping** | Checkbox lists that sync across voice and GUI |
 | 📅 | **Calendar** | Track events with dates and times |
 | 👤 | **Profiles** | Multiple companion personalities — create, clone, switch, import/export, delete |
@@ -95,6 +97,7 @@ In **`--web`** mode NovaAI is meant to be reached from other devices, so the web
 
 Just open the dashboard at e.g. `http://192.168.1.107:8800/` (or your Tailscale IP). When you open the **Avatar** window or **Live View**, NovaAI opens a **new browser tab on the same host you're using** (`192.168.1.107:8766`, `:8768`, …) — it never launches a browser on the Pi itself.
 
+- 🎬 **OBS Browser Sources:** add the **avatar** at `http://<host>:8766/?transparent=1` (transparent — shows *only* the avatar) and the **tips overlay** at `http://<host>:8800/overlay/earnings`.
 - 🖥️ The **desktop GUI** (`--gui`) is a local app, so these services stay bound to **`127.0.0.1`** (localhost only).
 - 🔒 To restrict a service in web mode, set its host: `NOVA_BIND_HOST` (all services), or per-service `NOVA_AVATAR_HOST` / `MC_VIEWER_HOST` (e.g. `127.0.0.1`).
 - ☁️ **Cloudflare tunnel:** the tab uses whatever host you browsed from, with the service port appended — expose those ports on that hostname in your tunnel config.
@@ -299,8 +302,10 @@ Move a profile between machines (e.g. your **PC → Raspberry Pi**) from the **P
 All runtime data lives in a single **SQLite database** at `data/novaai.db`:
 
 - 💬 Chat history
-- 👤 Profiles and all their feature data (reminders, todos, shopping, calendar, alarms)
-- ⚙️ App state (active profile, settings)
+- 👤 Profiles and all their feature data (reminders, todos, shopping, calendar, alarms, alert messages)
+- ⚙️ App state (active profile, settings, tips/earnings totals)
+
+Binary assets live on disk: VRM models in `data/avatars/`, MMD dances in `data/mmd/`.
 
 > 📦 On first run, existing JSON files (`profiles.json`, `history.jsonl`) are **automatically migrated** into the database. No manual steps needed.
 
@@ -332,6 +337,7 @@ Copy `.env.example` to `.env` and tweak what you need:
 | `LLM_API_KEY` | *(none)* | API key for cloud providers (OpenAI, OpenRouter, etc.) |
 | `OLLAMA_SKIP_LOCAL_SETUP` | `false` | Set `true` when using an existing Ollama server endpoint instead of local install/start |
 | `LLM_NUM_PREDICT` | `1200` | Reply token budget |
+| `OLLAMA_NUM_CTX` | `0` | Context window sent to Ollama (`0` = Ollama default). Cap it (e.g. `4096`) so long-context models load on small GPUs |
 | `LLM_TEMPERATURE` | `0.95` | Response creativity |
 
 ### 🌐 Web Search
@@ -449,7 +455,10 @@ NovaAI/
 ├── setup.py                  # 🔧 Setup, launch, and update — all in one
 ├── install.ps1               # ⚡ One-line PowerShell installer (Windows)
 ├── install.sh                # 🐧 One-line bash installer (Linux)
-├── requirements.txt          # 📦 Python dependencies
+├── requirements.txt          # 📦 Python dependencies (base)
+├── requirements-voice.txt    # 🎙️ Optional: mic/STT/TTS/embeddings
+├── requirements-gui.txt      # 🖥️ Optional: native pywebview desktop window
+├── requirements-streaming.txt# 🎉 Optional: Streamlabs/StreamElements live alerts
 ├── VERSION                   # 🏷️ Current version
 ├── .env.example              # ⚙️ Configuration template
 │
@@ -457,25 +466,30 @@ NovaAI/
 │   ├── logo.png              # 🎨 NovaAI logo
 │   ├── logo.ico              # 🎨 Window icon
 │   ├── novaai.db             # 🗄️ SQLite database (runtime)
+│   ├── avatars/              # 🧍 Uploaded VRM models
+│   ├── mmd/                  # 💃 MMD assets (motion/ audio/ camera/)
 │   └── profile.example.json  # 📝 Example profile
 │
 └── novaai/
-    ├── launcher.py           # 🚪 CLI vs GUI routing + auto-update
-    ├── webgui.py             # 🖥️ pywebview desktop GUI backend
+    ├── launcher.py           # 🚪 CLI vs GUI vs web routing + auto-update
+    ├── webgui.py             # 🖥️ Backend API (shared by desktop GUI + web)
+    ├── webserver.py          # 🌐 Headless web UI server (--web) + webhook
     ├── cli.py                # ⌨️ Terminal chat loop + commands
     ├── chat.py               # 🧠 System prompt + LLM requests
-    ├── engine.py             # 🧩 Shared reply-generation seam (chat/twitch/game)
-    ├── twitch.py             # 💜 Twitch IRC chat client + responder
+    ├── engine.py             # 🧩 Shared reply seam + emotion detection
+    ├── twitch.py             # 💜 Twitch IRC chat client (+ role parsing)
+    ├── stream_events.py      # 🎉 Unified stream-event model + reactions
+    ├── stream_sources.py     # 🔌 Streamlabs/StreamElements socket clients
     ├── memory.py             # 🧬 RAG long-term memory store
-    ├── avatar.py             # 🧍 VRM avatar bridge (WebSocket + OBS window)
+    ├── avatar.py             # 🧍 VRM avatar bridge (WebSocket + HTTP + MMD)
     ├── singing.py            # 🎤 Singing engine (XTTS/gTTS + backing merge)
     ├── games/                # 🎮 Game agent + drivers (minecraft/universal/…)
     ├── config.py             # ⚙️ Environment parsing + runtime config
     ├── database.py           # 🗄️ SQLite schema + CRUD operations
     ├── storage.py            # 💾 Profile/history API (SQLite-backed)
-    ├── features.py           # ⏰ Reminders, alarms, todos, shopping, calendar
+    ├── features.py           # ⏰ Date/time, reminders, alarms, todos, shopping, calendar
     ├── audio_input.py        # 🎙️ Mic capture + faster-whisper STT
-    ├── tts.py                # 🔊 XTTS-v2 / gTTS synthesis + playback
+    ├── tts.py                # 🔊 XTTS-v2 / gTTS synthesis + playback + lip-sync
     ├── media.py              # 🎵 Radio + music platform integration
     ├── media_player.py       # ▶️ In-app audio playback (ffplay)
     ├── performance.py        # ⚡ Hardware detection + auto-tuning
@@ -485,8 +499,9 @@ NovaAI/
     ├── models.py             # 📦 Shared dataclasses
     ├── paths.py              # 📍 Path constants
     └── static/
-        ├── index.html        # 🎨 Tailwind CSS frontend
-        └── avatar.html       # 🧍 three-vrm avatar renderer (OBS source)
+        ├── index.html        # 🎨 Tailwind CSS frontend (dashboard)
+        ├── avatar.html       # 🧍 three-vrm avatar renderer + MMD (OBS source)
+        └── earnings.html     # 🎉 Tips ("stockings") overlay (OBS source)
 
 node/
 └── minecraft-bridge/         # 🎮 Mineflayer Node bridge (modular lib/)
