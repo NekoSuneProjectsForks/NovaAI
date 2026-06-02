@@ -112,7 +112,7 @@ NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** �
 
 | Page | What It Does |
 |------|-------------|
-| 📊 **Dashboard** | Session controls, toggle voice/mic/hands-free, live status |
+| 📊 **Dashboard** | Session controls, toggle voice/mic/hands-free/web/media (all persist across restarts), live status |
 | 💬 **Chat** | Full conversation view with text + voice input |
 | 🔔 **Reminders** | Time-based reminders and recurring alarms |
 | 📅 **Calendar** | Events with date/time tracking |
@@ -368,6 +368,7 @@ Copy `.env.example` to `.env` and tweak what you need:
 |---------|---------|-------------|
 | `VOICE_ENABLED` | `false` | Start with voice replies on |
 | `TTS_PROVIDER` | `xtts` | Voice engine: `xtts` or `gtts` |
+| `AUDIO_OUTPUT` | `speaker` | Where NovaAI's audio (voice + singing) plays: `speaker` (server), `browser` (the open avatar tab plays it + lip-syncs), or `both`. Also a quick selector on the **Avatar** page and in **Settings → Voice**. Falls back to speaker if no avatar is running. (`TTS_OUTPUT` still accepted.) |
 | `XTTS_SPEED` | `1.0` | Speaking pace multiplier |
 | `XTTS_USE_GPU` | `true` | Use GPU for voice synthesis |
 | `XTTS_STREAM_OUTPUT` | `true` | Stream audio while generating |

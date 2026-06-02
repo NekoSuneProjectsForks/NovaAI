@@ -25,10 +25,15 @@ except ImportError:  # pragma: no cover
     websockets = None
     WebSocketServerProtocol = object
 
-from .paths import AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
+from .paths import AUDIO_DIR, AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
 
-# Generous cap for VRM uploads (they can be tens of MB).
-MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+# Upload cap for VRM models / MMD assets (high-res VRMs and big motion+audio
+# bundles can be hundreds of MB). Default 2 GB; override with NOVA_MAX_UPLOAD_MB.
+try:
+    MAX_UPLOAD_MB = max(1, int(os.getenv("NOVA_MAX_UPLOAD_MB", "2048")))
+except ValueError:
+    MAX_UPLOAD_MB = 2048
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 
 def _local_ip() -> str:
@@ -113,6 +118,28 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
                 self._serve_file(local_path, content_type=ctype)
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
+            return
+
+        media_types = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
+
+        if path == "/tts-audio":
+            # The latest synthesized TTS reply, for browser-side playback.
+            candidates = [AUDIO_DIR / "latest_reply.wav", AUDIO_DIR / "latest_reply.mp3"]
+            existing = [p for p in candidates if p.is_file()]
+            if not existing:
+                self.send_error(HTTPStatus.NOT_FOUND, "No TTS audio")
+                return
+            latest = max(existing, key=lambda p: p.stat().st_mtime)
+            self._serve_file(latest, content_type=media_types.get(latest.suffix.lower(), "audio/wav"))
+            return
+
+        if path == "/browser-audio":
+            # Arbitrary current audio file (singing/music) routed to the browser.
+            cur = getattr(self.server, "current_audio_path", None)
+            if not cur or not Path(cur).is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "No audio")
+                return
+            self._serve_file(Path(cur), content_type=media_types.get(Path(cur).suffix.lower(), "audio/wav"))
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
@@ -222,13 +249,18 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read file")
             return
 
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(content)))
-        # Avoid the browser serving a stale avatar.html after updates.
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            # Avoid the browser serving a stale avatar.html after updates.
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Browser aborted/seeked/closed mid-transfer (common for media like
+            # MMD audio). Harmless — don't spam the console with a traceback.
+            pass
 
 
 class AvatarHttpServer(socketserver.ThreadingMixIn, HTTPServer):
@@ -237,6 +269,8 @@ class AvatarHttpServer(socketserver.ThreadingMixIn, HTTPServer):
     def __init__(self, server_address, RequestHandlerClass, on_upload: Callable[[Path], None]):
         super().__init__(server_address, RequestHandlerClass)
         self.on_upload = on_upload
+        # Current arbitrary audio file (singing/music) served at /browser-audio.
+        self.current_audio_path: Path | None = None
 
 
 class AvatarBridge:
@@ -384,6 +418,28 @@ class AvatarBridge:
         self._broadcast(
             {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
         )
+
+    def publish_tts(self, url: str, emotion: str = "neutral") -> None:
+        """Tell the overlay to play a TTS reply in the browser (with lip-sync)."""
+        self._broadcast({"type": "tts", "url": url, "emotion": emotion})
+
+    def serve_audio(self, path) -> None:
+        """Make an arbitrary audio file available at /browser-audio."""
+        if self.http_server is not None:
+            self.http_server.current_audio_path = Path(path)
+
+    def publish_audio(
+        self, url: str, kind: str = "tts", emotion: str = "neutral",
+        lipsync: bool = True, loop: bool = False,
+    ) -> None:
+        """Tell the overlay to play any audio (singing/music) in the browser."""
+        self._broadcast({
+            "type": "audio", "url": url, "kind": kind,
+            "emotion": emotion, "lipsync": bool(lipsync), "loop": bool(loop),
+        })
+
+    def publish_audio_stop(self) -> None:
+        self._broadcast({"type": "audio-stop"})
 
     def publish_mmd(self, motion_url: str, audio_url: str = "", camera_url: str = "", loop: bool = False) -> None:
         """Tell the overlay to play an MMD dance (motion + optional audio/camera)."""

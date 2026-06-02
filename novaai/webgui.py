@@ -209,6 +209,7 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
         "label": "Voice (TTS)",
         "fields": [
             {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
+            {"key": "audio_output", "label": "Audio output (voice/singing/music)", "type": "select", "options": ["speaker", "browser", "both"]},
             {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
             {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
             {"key": "xtts_speed", "label": "Speed", "type": "float"},
@@ -284,6 +285,7 @@ class Api:
         self.session_started = False
         self.hands_free_enabled = False
         self.mic_muted = False
+        self.media_enabled = True   # music/radio playback feature toggle
         self.busy = False
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -319,6 +321,8 @@ class Api:
         )
         self.config.voice_enabled = False
         self.hands_free_enabled = self.config.input_mode == "voice"
+        # Restore the Voice & Input + Media toggles saved last session.
+        self._apply_saved_ui_prefs()
         self._initialized = True
         self._start_avatar_if_enabled()
         # Update window title with the loaded companion name
@@ -384,6 +388,7 @@ class Api:
             "mic_muted": self.mic_muted,
             "web_search": cfg.web_browsing_enabled if cfg else False,
             "web_auto_search": cfg.web_auto_search if cfg else False,
+            "media_enabled": self.media_enabled,
             "busy": self.busy,
             "model": cfg.model if cfg else "--",
             "llm_provider": cfg.llm_provider if cfg else "--",
@@ -417,6 +422,7 @@ class Api:
 
     def toggle_voice(self) -> dict[str, Any]:
         self.state.voice_enabled = not self.state.voice_enabled
+        self._save_ui_pref("voice_enabled", self.state.voice_enabled)
         self._push_state()
         return {"voice_enabled": self.state.voice_enabled}
 
@@ -424,6 +430,7 @@ class Api:
         if (err := self._not_ready()): return err
         self.hands_free_enabled = not self.hands_free_enabled
         self.config.input_mode = "voice" if self.hands_free_enabled else "text"
+        self._save_ui_pref("hands_free", self.hands_free_enabled)
         self._push_state()
         if self.hands_free_enabled and not self.busy and not self.mic_muted and self.session_started:
             threading.Thread(target=self._auto_listen, daemon=True).start()
@@ -431,6 +438,7 @@ class Api:
 
     def toggle_mic(self) -> dict[str, Any]:
         self.mic_muted = not self.mic_muted
+        self._save_ui_pref("mic_muted", self.mic_muted)
         self._push_state()
         if not self.mic_muted and self.hands_free_enabled and not self.busy and self.session_started:
             threading.Thread(target=self._auto_listen, daemon=True).start()
@@ -439,12 +447,20 @@ class Api:
     def toggle_web_search(self) -> dict[str, Any]:
         if (err := self._not_ready()): return err
         self.config.web_browsing_enabled = not self.config.web_browsing_enabled
+        self._save_ui_pref("web_search", self.config.web_browsing_enabled)
         self._push_state()
         return {"web_search": self.config.web_browsing_enabled}
+
+    def toggle_media(self) -> dict[str, Any]:
+        self.media_enabled = not self.media_enabled
+        self._save_ui_pref("media_enabled", self.media_enabled)
+        self._push_state()
+        return {"media_enabled": self.media_enabled}
 
     def toggle_auto_search(self) -> dict[str, Any]:
         if (err := self._not_ready()): return err
         self.config.web_auto_search = not self.config.web_auto_search
+        self._save_ui_pref("web_auto_search", self.config.web_auto_search)
         self._push_state()
         return {"web_auto_search": self.config.web_auto_search}
 
@@ -555,9 +571,9 @@ class Api:
         self._push_chat(user_name, user_text, "user")
         self._push_status("Thinking...")
 
-        # Media
-        media_action = handle_media_request(user_text, self.profile, self.config)
-        if media_action.handled:
+        # Media (music/radio) — only when the feature is enabled.
+        media_action = handle_media_request(user_text, self.profile, self.config) if self.media_enabled else None
+        if media_action and media_action.handled:
             self.profile = save_profile_by_id(self.active_profile_id, self.profile)
             append_history("user", user_text)
             append_history("assistant", media_action.response)
@@ -972,20 +988,34 @@ class Api:
 
     def _speak(self, text: str, emotion: str = "neutral") -> None:
         """Speak text via TTS, driving avatar emotion + lip-sync if present."""
-        if self.avatar is not None:
+        # Where the spoken reply plays: server "speaker", the "browser" (avatar
+        # overlay does its own playback + lip-sync), or "both".
+        out = getattr(self.config, "audio_output", "speaker")
+        to_browser = out in ("browser", "both") and self.avatar is not None
+        # Speaker plays when selected, OR as a fallback when "browser" is chosen
+        # but no avatar overlay is running (so a reply is never silently dropped).
+        to_speaker = out in ("speaker", "both") or (out == "browser" and self.avatar is None)
+        # In speaker mode the server playback blocks, so it owns the speaking
+        # window (start now / stop in finally). In browser-only mode the overlay
+        # plays the audio itself and manages speaking + lip-sync from the 'tts'
+        # message, so we don't open/close the window here.
+        if self.avatar is not None and to_speaker:
             try:
                 self.avatar.publish_speaking(True, emotion)
             except Exception:
                 pass
-        cb = self._amplitude_cb() if self.avatar is not None else None
+        cb = self._amplitude_cb() if (self.avatar is not None and to_speaker) else None
         try:
             audio_path = speak_text(text, self.config, self.state, on_amplitude=cb)
-            if should_play_audio_after_synthesis(self.config) and not self._stopped():
+            if to_browser and not self._stopped():
+                # Cache-bust so the browser fetches this reply, not the previous one.
+                self.avatar.publish_tts(f"/tts-audio?t={int(time.time() * 1000)}", emotion)
+            if to_speaker and should_play_audio_after_synthesis(self.config) and not self._stopped():
                 play_audio_file(audio_path, self.config.speaker_device_index, on_amplitude=cb)
         except Exception:
             pass
         finally:
-            if self.avatar is not None:
+            if self.avatar is not None and to_speaker:
                 try:
                     self.avatar.publish_viseme(0.0)
                     self.avatar.publish_speaking(False, emotion)
@@ -1468,6 +1498,44 @@ class Api:
             raw = None
         self.config.llm_api_url = resolve_llm_api_url(provider, raw)
 
+    # ── persisted UI prefs (voice/input toggles + media) ──────────────────────────
+
+    def _ui_prefs(self) -> dict[str, Any]:
+        from . import database
+        try:
+            return json.loads(database.get_state("ui_prefs", "{}") or "{}")
+        except Exception:
+            return {}
+
+    def _save_ui_pref(self, key: str, value: Any) -> None:
+        from . import database
+        try:
+            prefs = self._ui_prefs()
+            prefs[key] = value
+            database.set_state("ui_prefs", json.dumps(prefs))
+        except Exception:
+            pass
+
+    def _apply_saved_ui_prefs(self) -> None:
+        """Restore the Voice & Input toggles + Media toggle from last session."""
+        prefs = self._ui_prefs()
+        if "voice_enabled" in prefs:
+            self.state.voice_enabled = bool(prefs["voice_enabled"])
+            if self.config:
+                self.config.voice_enabled = self.state.voice_enabled
+        if "hands_free" in prefs:
+            self.hands_free_enabled = bool(prefs["hands_free"])
+            if self.config:
+                self.config.input_mode = "voice" if self.hands_free_enabled else "text"
+        if "mic_muted" in prefs:
+            self.mic_muted = bool(prefs["mic_muted"])
+        if self.config and "web_search" in prefs:
+            self.config.web_browsing_enabled = bool(prefs["web_search"])
+        if self.config and "web_auto_search" in prefs:
+            self.config.web_auto_search = bool(prefs["web_auto_search"])
+        if "media_enabled" in prefs:
+            self.media_enabled = bool(prefs["media_enabled"])
+
     def _apply_saved_app_settings(self) -> None:
         if not self.config:
             return
@@ -1864,15 +1932,39 @@ class Api:
                 self._push_status("Composing a song...")
                 engine = make_singing_engine(self.config)
                 path = engine.sing(lyrics.strip(), melody_ref.strip() or None)
-                if self.avatar is not None:
+                out = getattr(self.config, "audio_output", "speaker")
+                to_browser = out in ("browser", "both") and self.avatar is not None
+                to_speaker = out in ("speaker", "both") or (out == "browser" and self.avatar is None)
+                if self.avatar is not None and to_speaker:
                     try:
                         self.avatar.publish_speaking(True, "happy")
                     except Exception:
                         pass
                 self._avatar_dance(True)
-                cb = self._amplitude_cb() if self.avatar is not None else None
                 self._push_status("Singing...")
-                play_audio_file(path, self.config.speaker_device_index, on_amplitude=cb)
+                if to_browser:
+                    # The overlay plays the song (and lip-syncs to it).
+                    self.avatar.serve_audio(path)
+                    self.avatar.publish_audio(
+                        f"/browser-audio?t={int(time.time() * 1000)}", kind="singing",
+                        emotion="happy", lipsync=True,
+                    )
+                if to_speaker:
+                    cb = self._amplitude_cb() if self.avatar is not None else None
+                    play_audio_file(path, self.config.speaker_device_index, on_amplitude=cb)
+                elif to_browser:
+                    # Browser plays async — keep dancing for ~the song's length.
+                    try:
+                        from .tts import _decode_audio_mono
+                        from pathlib import Path as _P
+                        samples, sr = _decode_audio_mono(_P(path))
+                        dur = (samples.size / sr) if (samples is not None and sr) else 0
+                    except Exception:
+                        dur = 0
+                    waited = 0.0
+                    while dur and waited < dur and not self._stopped():
+                        time.sleep(0.25)
+                        waited += 0.25
             except Exception as exc:
                 self._push_chat("System", f"Singing failed: {exc}", "system")
             finally:

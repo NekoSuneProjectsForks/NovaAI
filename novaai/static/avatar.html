@@ -880,29 +880,60 @@
 
   let audioUnlocked = false;
   const audioUnlockBtn = document.getElementById('audioUnlock');
+  let pendingAudio = [];   // <audio> elements blocked by autoplay, retried on unlock
+
+  function _registerBlocked(a) {
+    if (a && pendingAudio.indexOf(a) === -1) pendingAudio.push(a);
+    if (audioUnlockBtn) audioUnlockBtn.style.display = 'block';
+  }
+
+  // Any user gesture unlocks audio and starts anything that was blocked. Kept as
+  // persistent listeners (not once) so it works no matter when the user clicks.
+  function unlockAudio() {
+    audioUnlocked = true;
+    if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
+    if (mmdAudio) { try { mmdAudio.play(); } catch (e) {} }
+    for (const a of pendingAudio) { try { a.play(); } catch (e) {} }
+    pendingAudio = [];
+  }
+  if (audioUnlockBtn) audioUnlockBtn.addEventListener('click', unlockAudio);
+  window.addEventListener('pointerdown', unlockAudio);
+  window.addEventListener('keydown', unlockAudio);
 
   function tryPlayMmdAudio() {
     if (!mmdAudio) return;
     const p = mmdAudio.play();
     if (p && p.catch) {
       p.then(() => { if (audioUnlockBtn) audioUnlockBtn.style.display = 'none'; })
-       .catch(() => {
-         // Autoplay blocked — show the unlock button so one click starts it.
-         logMessage('MMD: click "enable dance audio" (browser blocked autoplay).');
-         if (audioUnlockBtn) audioUnlockBtn.style.display = 'block';
-       });
+       .catch(() => { logMessage('MMD: click "enable audio" (browser blocked autoplay).'); _registerBlocked(mmdAudio); });
     }
   }
 
-  // A single user gesture unlocks audio for the rest of the session.
-  function unlockAudio() {
-    audioUnlocked = true;
-    if (audioUnlockBtn) audioUnlockBtn.style.display = 'none';
-    if (mmdAudio) { try { mmdAudio.play(); } catch (e) {} }
+  // Generic browser audio for TTS / singing / music routed from the server
+  // (audio_output = browser / both). Plays a plain <audio> element — reliable and
+  // autoplay-aware (no AudioContext that can sit silently suspended). When it's
+  // speech/singing, the synthetic talk oscillation drives the mouth.
+  let browserAudio = null;
+  function playBrowserAudio(url, opts) {
+    opts = opts || {};
+    try {
+      if (opts.emotion) { setExpressionStatus(opts.emotion); applyExpression(opts.emotion); }
+      if (browserAudio) { try { browserAudio.pause(); } catch (e) {} }
+      const a = new Audio(url);
+      a.loop = !!opts.loop;
+      browserAudio = a;
+      const lip = opts.lipsync !== false;
+      if (lip) { speaking = true; lastVisemeAt = 0; }   // synthetic mouth movement
+      const done = () => { if (lip && browserAudio === a) { speaking = false; mouthTarget = 0; } };
+      a.onended = done; a.onerror = done;
+      a.play().then(() => { if (audioUnlockBtn) audioUnlockBtn.style.display = 'none'; })
+       .catch(() => { logMessage('Click "enable audio" to hear NovaAI in the browser.'); _registerBlocked(a); });
+    } catch (e) { logMessage('Audio play failed: ' + (e.message || e)); }
   }
-  if (audioUnlockBtn) audioUnlockBtn.addEventListener('click', unlockAudio);
-  window.addEventListener('pointerdown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
-  window.addEventListener('keydown', () => { if (!audioUnlocked) unlockAudio(); }, { once: true });
+  function stopBrowserAudio() {
+    if (browserAudio) { try { browserAudio.pause(); } catch (e) {} browserAudio = null; }
+    speaking = false; mouthTarget = 0;
+  }
 
   // ── Live MMD tuning panel (non-transparent overlay) ──────────────────────────
   function _mmdReapply() {
@@ -1229,6 +1260,18 @@
           setExpressionStatus(payload.emotion);
           applyExpression(payload.emotion);
         }
+      }
+
+      if (payload.type === 'tts' || payload.type === 'audio') {
+        // TTS/singing → lip-sync; music → no lip-sync (kind === 'music').
+        playBrowserAudio(payload.url, {
+          emotion: payload.emotion,
+          lipsync: payload.lipsync !== false && payload.kind !== 'music',
+          loop: !!payload.loop,
+        });
+      }
+      if (payload.type === 'audio-stop') {
+        stopBrowserAudio();
       }
 
       if (payload.type === 'dance') {
