@@ -182,35 +182,65 @@ def _sl_platform(message: dict[str, Any], etype: str) -> str:
     return raw.replace("_account", "") if raw else ""
 
 
+# Streamlabs top-level "type" → our canonical event type. Streamlabs uses
+# 'bits' for cheers and forwards YouTube Super Chats as 'superchat'.
+_SL_TYPE_ALIAS = {
+    "donation": "donation",
+    "follow": "follow",
+    "subscription": "subscription",
+    "resub": "resub",
+    "submysterygift": "giftsub",
+    "membershipgift": "giftsub",
+    "bits": "cheer",
+    "host": "host",
+    "raid": "raid", "raids": "raid",
+    "superchat": "donation", "superchats": "donation",
+}
+
+
+def _sl_item_type(base_type: str, item: dict[str, Any]) -> str:
+    """Refine a per-item type — a 'subscription' may really be a resub."""
+    sub_type = str(item.get("sub_type") or "").strip().lower()
+    if base_type == "subscription" and sub_type in {"resub", "resubscription"}:
+        return "resub"
+    return base_type
+
+
 def from_streamlabs(message: dict[str, Any]) -> list[StreamEvent]:
-    """Streamlabs socket 'event' payload: {type, message:[{...}], for}."""
+    """Streamlabs socket 'event' payload: {type, message:[{...}], for}.
+
+    Handles donations, Twitch follows/subs/resubs/bits/hosts/raids, YouTube
+    follows/subs/Super Chats, etc. Each linked platform is tagged via ``for``.
+    """
     out: list[StreamEvent] = []
     if not isinstance(message, dict):
         return out
-    etype = str(message.get("type") or "").strip().lower()
-    alias = {
-        "donation": "donation", "follow": "follow", "subscription": "subscription",
-        "resub": "resub", "subMysteryGift": "giftsub", "bits": "cheer",
-        "host": "host", "raid": "raid",
-    }
-    etype = alias.get(etype, etype)
-    if etype not in EVENT_TYPES:
+    raw_type = str(message.get("type") or "").strip().lower()
+    base_type = _SL_TYPE_ALIAS.get(raw_type, raw_type)
+    if base_type not in EVENT_TYPES:
         return out
-    platform = _sl_platform(message, etype)
+    platform = _sl_platform(message, base_type)
+    is_superchat = raw_type in {"superchat", "superchats"}
     items = message.get("message")
     if not isinstance(items, list):
         items = [items] if isinstance(items, dict) else []
     for it in items:
         if not isinstance(it, dict):
             continue
+        etype = _sl_item_type(base_type, it)
+        amount = _to_float(it.get("amount") or 0)
+        # YouTube Super Chat amounts arrive in micros (2000000 == $2.00).
+        if is_superchat and amount >= 1000:
+            amount = round(amount / 1_000_000.0, 2)
         out.append(StreamEvent(
             type=etype,
-            user=str(it.get("name") or it.get("from") or "someone"),
-            amount=_to_float(it.get("amount") or 0),
+            user=str(it.get("name") or it.get("from") or it.get("displayName") or "someone"),
+            amount=amount,
             currency=str(it.get("currency") or "USD"),
-            months=_to_int(it.get("months") or 0),
+            months=_to_int(it.get("months") or it.get("streak") or 0),
+            tier=str(it.get("sub_plan") or it.get("tier") or ""),
             viewers=_to_int(it.get("raiders") or it.get("viewers") or 0),
-            message=str(it.get("message") or ""),
+            message=str(it.get("message") or it.get("comment") or ""),
             source="streamlabs",
             platform=platform,
             event_id=str(it.get("_id") or message.get("event_id") or ""),
@@ -246,6 +276,78 @@ def from_streamelements(payload: dict[str, Any]) -> StreamEvent | None:
         source="streamelements",
         raw=data,
     )
+
+
+# StreamElements Astro (wss://astro.streamelements.com) activity type → ours.
+_SE_ASTRO_TYPE = {
+    "follow": "follow", "follower": "follow",
+    "subscriber": "subscription", "sponsor": "subscription",
+    "tip": "donation", "superchat": "donation",
+    "charitycampaigndonation": "donation",
+    "cheer": "cheer", "cheerpurchase": "cheer",
+    "raid": "raid", "host": "host",
+    "communitygiftpurchase": "giftsub", "subgift": "giftsub",
+}
+
+
+def _se_astro_tip(data: dict[str, Any]) -> StreamEvent | None:
+    """channel.tips payload → donation."""
+    don = data.get("donation") if isinstance(data.get("donation"), dict) else {}
+    user = don.get("user") if isinstance(don.get("user"), dict) else {}
+    return StreamEvent(
+        type="donation",
+        user=str(user.get("username") or user.get("name") or "someone"),
+        amount=_to_float(don.get("amount") or 0),
+        currency=str(don.get("currency") or "USD"),
+        message=str(don.get("message") or ""),
+        source="streamelements",
+        platform=str(data.get("provider") or "streamelements"),
+        event_id=str(data.get("_id") or data.get("transactionId") or ""),
+        raw=data,
+    )
+
+
+def _se_astro_activity(data: dict[str, Any]) -> StreamEvent | None:
+    """channel.activities payload → StreamEvent (follow/sub/cheer/raid/...)."""
+    atype = str(data.get("type") or "").strip().lower()
+    etype = _SE_ASTRO_TYPE.get(atype)
+    if not etype:
+        return None
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    viewers = 0
+    if etype in {"raid", "host"}:
+        viewers = _to_int(inner.get("raiders") or inner.get("viewers") or inner.get("amount") or 0)
+    return StreamEvent(
+        type=etype,
+        user=str(inner.get("displayName") or inner.get("username") or inner.get("name") or "someone"),
+        amount=_to_float(inner.get("amount") or 0) if etype in {"cheer", "donation"} else 0.0,
+        currency=str(inner.get("currency") or "USD"),
+        months=_to_int(inner.get("months") or inner.get("streak") or 0),
+        tier=str(inner.get("tier") or ""),
+        viewers=viewers,
+        message=str(inner.get("message") or inner.get("comment") or ""),
+        source="streamelements",
+        platform=str(data.get("provider") or "streamelements"),
+        event_id=str(data.get("_id") or data.get("activityId") or ""),
+        raw=data,
+    )
+
+
+def from_streamelements_astro(envelope: dict[str, Any]) -> StreamEvent | None:
+    """Astro server 'message' frame → StreamEvent.
+
+    Routes by topic: ``channel.tips`` (donations) and ``channel.activities``
+    (follows/subs/cheers/raids/hosts/gift subs/Super Chats).
+    """
+    if not isinstance(envelope, dict):
+        return None
+    topic = str(envelope.get("topic") or "")
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    if topic == "channel.tips":
+        return _se_astro_tip(data)
+    if topic == "channel.activities":
+        return _se_astro_activity(data)
+    return None
 
 
 def from_twitch_eventsub(payload: dict[str, Any]) -> StreamEvent | None:

@@ -1124,18 +1124,24 @@ class Api:
             return details["alerts"]
         return {}
 
+    # Streaming platforms that the allow-list filters. Donations/tips (tagged
+    # "streamlabs" or a payment provider like "paypal") are never filtered out.
+    _FILTERABLE_PLATFORMS = {"twitch", "youtube", "facebook", "kick", "trovo"}
+
     def _platform_allowed(self, event: "stream_events.StreamEvent") -> bool:
-        """Filter Streamlabs events by the configured platform allow-list.
+        """Filter alerts by the configured streaming-platform allow-list.
 
         ``streamlabs_platforms`` is a comma-separated list (e.g. "twitch,kick").
-        Blank = accept all platforms. Only applies to Streamlabs events that
-        carry a platform tag; everything else passes through untouched.
+        Blank = accept all platforms. Only platform-specific events (Twitch/
+        YouTube/Facebook/Kick/Trovo) are filtered; donations and tips always
+        pass so money is never silently dropped.
         """
         allow = getattr(self.config, "streamlabs_platforms", "") if self.config else ""
-        if not allow or not event.platform:
+        plat = (event.platform or "").lower()
+        if not allow or plat not in self._FILTERABLE_PLATFORMS:
             return True
         wanted = {p.strip() for p in allow.split(",") if p.strip()}
-        return event.platform in wanted
+        return plat in wanted
 
     def handle_stream_event(self, event: "stream_events.StreamEvent") -> None:
         """React to one normalized stream event: expression + cute message + tally.

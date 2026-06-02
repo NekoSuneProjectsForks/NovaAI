@@ -59,7 +59,9 @@ powershell -c "irm https://raw.githubusercontent.com/cachenetworks/NovaAI/main/i
 curl -fsSL https://raw.githubusercontent.com/cachenetworks/NovaAI/main/install.sh | bash
 ```
 
-> Both installers handle **everything** — Python, LLM provider choice (Ollama, OpenAI, OpenRouter, LM Studio, or any custom endpoint), model downloads, NVIDIA GPU setup, desktop shortcut/launcher — the works. Just answer a few questions and sit back.
+> Both installers handle **everything** — Python, **run mode (GUI window vs browser/Web)**, LLM provider choice (Ollama, OpenAI, OpenRouter, LM Studio, or any custom endpoint), model downloads, NVIDIA GPU setup, and a desktop shortcut/launcher mapped to your chosen `--gui` / `--web` mode — the works. Just answer a few questions and sit back.
+>
+> **Run mode:** pick **GUI** (native desktop window) or **Web** (browser UI you reach from any device). Both install the base + voice + **stream-alert** dependencies; GUI also installs the desktop-GUI extra. The installer writes a `run-nova.sh` (`run-nova.bat` on Windows) and a menu/desktop shortcut that launch NovaAI in that mode — switch later by editing `.nova-run-mode`.
 
 ### 🔧 Already have the repo?
 
@@ -148,7 +150,9 @@ Reads your channel's chat and replies **in-character**, just like Neuro-sama. Wo
 NovaAI reacts to **donations, follows, subs, resubs, gift subs, cheers, raids, and hosts** with an avatar expression + a cute, **profile-flavored** spoken message — then tallies the money on a tips overlay.
 
 - **Sources**: Streamlabs & StreamElements (enter the tokens in **Settings → Stream Alerts** or via `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
-  > ⚠️ Live Streamlabs/StreamElements alerts need the Socket.IO client — run **`pip install -r requirements-streaming.txt`** (otherwise NovaAI tells you it's missing and only the webhook/simulator work).
+  - **Streamlabs** uses your socket API token and covers donations plus **Twitch / YouTube / Facebook / Kick / Trovo** follows, subs, resubs, gift subs, bits, hosts, raids, and YouTube **Super Chats** (amounts normalized automatically).
+  - **StreamElements** connects to the current **Astro WebSocket gateway** (`wss://astro.streamelements.com`) using your channel **JWT** — the channel id is read from the token, and it subscribes to tips + activities.
+  > ⚠️ Live Streamlabs/StreamElements alerts need the streaming client — run **`pip install -r requirements-streaming.txt`** (the installers do this for you; otherwise NovaAI tells you it's missing and only the webhook/simulator work).
   ```bash
   curl -X POST "http://<host>:8800/webhook/stream?source=webhook" \
        -H "Content-Type: application/json" \
@@ -687,23 +691,26 @@ PRs welcome! If you're not sure where to start, open an issue and we'll point yo
 
 > NovaAI runs on **Windows**, **amd64 Linux**, and **ARM64 / Raspberry Pi 5**.
 
-### Install profiles
+### Run modes & install profiles
 
-Voice and the native desktop GUI are now **optional add-ons**, so a headless box
-installs only what it needs. `install.sh` asks which profile you want; you can also
-pick manually:
+`install.sh` / `install.ps1` ask **how you want to run NovaAI** and install the
+right dependency set for it:
 
-| Profile | Installs | Good for |
+| Run mode | Installs | Good for |
 |---|---|---|
-| **Minimal** | `requirements.txt` | Text chat + **browser web UI**. Smallest, ARM-friendly. Recommended for a Pi. |
-| **+ Voice** | `+ requirements-voice.txt` | Mic, speech-to-text, XTTS/gTTS, embeddings, singing (large; needs a mic/speakers). |
-| **+ Desktop GUI** | `+ requirements-gui.txt` | The native pywebview window (needs a display). |
-| **Everything** | all three | A full desktop machine. |
+| **Web** | `requirements.txt` + `requirements-voice.txt` + `requirements-streaming.txt` | Browser UI reachable from any device. Great for a Pi / server. |
+| **GUI** | the above **+ `requirements-gui.txt`** | The native desktop window (needs a display). |
+
+Both modes install the **stream-alert** client (`requirements-streaming.txt`) so
+live Streamlabs/StreamElements alerts work out of the box. Prefer to pick the raw
+dependency set yourself? Use `NOVA_INSTALL_PROFILE` (`minimal` / `voice` / `gui` /
+`full`) with `setup.py --setup`, or install manually:
 
 ```bash
-pip install -r requirements.txt                          # minimal (text + web UI)
-pip install -r requirements.txt -r requirements-voice.txt # add voice/ML
-pip install -r requirements.txt -r requirements-gui.txt   # add the desktop GUI
+pip install -r requirements.txt                            # minimal (text + web UI)
+pip install -r requirements.txt -r requirements-voice.txt  # add voice/ML
+pip install -r requirements.txt -r requirements-streaming.txt # add live stream alerts
+pip install -r requirements.txt -r requirements-gui.txt    # add the desktop GUI
 ```
 
 > The desktop GUI's CEF backend is Windows-only; on Linux/ARM `requirements-gui.txt`

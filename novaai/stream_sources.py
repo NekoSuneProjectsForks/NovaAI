@@ -11,6 +11,9 @@ Each source runs in its own daemon thread, normalizes incoming payloads into a
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import threading
 from typing import Callable
 
@@ -21,13 +24,42 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     socketio = None  # type: ignore
 
+try:
+    import websocket as _websocket  # websocket-client (raw WS for SE Astro)
+except Exception:  # pragma: no cover - optional dependency
+    _websocket = None  # type: ignore
+
 STREAMLABS_URL = "https://sockets.streamlabs.com"
 STREAMELEMENTS_URL = "https://realtime.streamelements.com"
+STREAMELEMENTS_ASTRO_URL = "wss://astro.streamelements.com/"
 
 
 def available() -> bool:
     """True when the optional Socket.IO client library is installed."""
     return socketio is not None
+
+
+def _jwt_channel(token: str) -> str:
+    """Best-effort: pull the channel/account id out of a StreamElements JWT.
+
+    SE channel JWTs carry the channel id in their (unsigned-readable) payload,
+    so we can subscribe to the right Astro room without asking for it twice.
+    """
+    try:
+        parts = (token or "").split(".")
+        if len(parts) < 2:
+            return ""
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8", "ignore"))
+        return str(
+            data.get("channel")
+            or data.get("channelId")
+            or data.get("channel_id")
+            or data.get("provider_id")
+            or ""
+        )
+    except (ValueError, binascii.Error, KeyError):
+        return ""
 
 
 class _BaseSource:
@@ -46,12 +78,16 @@ class _BaseSource:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
+    def _deps_ok(self) -> bool:
+        """Whether this source's client library is installed (override per source)."""
+        return socketio is not None
+
     def start(self) -> bool:
         if not self.token:
             return False
-        if not available():
+        if not self._deps_ok():
             self.on_status(
-                f"{self.name}: python-socketio not installed — run "
+                f"{self.name}: streaming client not installed — run "
                 "'pip install -r requirements-streaming.txt' to enable live alerts."
             )
             return False
@@ -112,7 +148,12 @@ class StreamlabsSource(_BaseSource):
             self.on_status(f"Streamlabs: connection failed ({exc}).")
 
 
-class StreamElementsSource(_BaseSource):
+class StreamElementsSocketIOSource(_BaseSource):
+    """Legacy StreamElements realtime gateway (Socket.IO). Kept as a fallback.
+
+    Prefer :class:`StreamElementsAstroSource` (the current Astro WS gateway).
+    """
+
     name = "StreamElements"
 
     def _run(self) -> None:  # pragma: no cover - needs live token
@@ -150,3 +191,107 @@ class StreamElementsSource(_BaseSource):
             sio.wait()
         except Exception as exc:
             self.on_status(f"StreamElements: connection failed ({exc}).")
+
+
+class StreamElementsAstroSource(_BaseSource):
+    """StreamElements Astro WebSocket gateway (wss://astro.streamelements.com).
+
+    Subscribes to ``channel.tips`` (donations) and ``channel.activities``
+    (follows/subs/cheers/raids/hosts/gift subs/Super Chats) for the channel the
+    JWT belongs to, and supports zero-downtime reconnect tokens.
+    """
+
+    name = "StreamElements"
+    TOPICS = ("channel.activities", "channel.tips")
+
+    def _deps_ok(self) -> bool:
+        return _websocket is not None
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            if self._client is not None:
+                self._client.close()
+        except Exception:
+            pass
+
+    def _run(self) -> None:  # pragma: no cover - needs live token
+        room = _jwt_channel(self.token)
+        if not room:
+            self.on_status(
+                "StreamElements: couldn't read the channel id from the JWT — "
+                "check that you pasted a channel JWT token."
+            )
+            return
+
+        reconnect_token = ""
+
+        def on_open(ws) -> None:
+            # On a fresh connection we subscribe; after a graceful reconnect the
+            # server restores subscriptions automatically (re-subscribing is a
+            # harmless no-op, so we always send them).
+            for topic in self.TOPICS:
+                try:
+                    ws.send(json.dumps({
+                        "type": "subscribe",
+                        "nonce": topic,
+                        "data": {
+                            "topic": topic,
+                            "room": room,
+                            "token": self.token,
+                            "token_type": "jwt",
+                        },
+                    }))
+                except Exception:
+                    pass
+
+        def on_message(ws, raw) -> None:
+            nonlocal reconnect_token
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                return
+            mtype = msg.get("type")
+            if mtype == "welcome":
+                self.on_status("StreamElements: connected (Astro).")
+            elif mtype == "response" and msg.get("error"):
+                detail = (msg.get("data") or {}).get("message", "")
+                self.on_status(f"StreamElements: {msg.get('error')} {detail}".strip())
+            elif mtype == "message":
+                ev = stream_events.from_streamelements_astro(msg)
+                self._emit([ev] if ev else [])
+            elif mtype == "reconnect":
+                reconnect_token = str((msg.get("data") or {}).get("reconnect_token") or "")
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+        def on_error(ws, err) -> None:
+            self.on_status(f"StreamElements: ws error ({err}).")
+
+        # Reconnect loop: honor graceful reconnect tokens, otherwise back off.
+        while not self._stop.is_set():
+            url = STREAMELEMENTS_ASTRO_URL
+            if reconnect_token:
+                url = f"{STREAMELEMENTS_ASTRO_URL}?reconnect_token={reconnect_token}"
+                reconnect_token = ""
+            ws = _websocket.WebSocketApp(
+                url,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+            )
+            self._client = ws
+            try:
+                # Server pings every 30s; websocket-client auto-replies with pong.
+                ws.run_forever(ping_timeout=60)
+            except Exception as exc:
+                self.on_status(f"StreamElements: connection failed ({exc}).")
+            if self._stop.is_set():
+                break
+            self._stop.wait(5)  # brief backoff before reconnecting
+
+
+# Default StreamElements source is the current Astro gateway.
+StreamElementsSource = StreamElementsAstroSource
