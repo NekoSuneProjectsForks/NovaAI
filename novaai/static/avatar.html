@@ -724,16 +724,17 @@
         if (r) { try { em.setValue(expr, Math.max(0, Math.min(1, r.w))); } catch (x) {} }
       });
     }
-    // Camera.
+    // Camera. MMD distance is in MMD units, so scale it to metres like
+    // positions (without this the camera sits ~12× too far → zoomed way out).
     if (mmd.camKeys.length) {
       const c = _sampleCamera(mmd.camKeys, t);
       if (c) {
         const e = new THREE.Euler(-c.rot[0], -c.rot[1], c.rot[2], 'YXZ');
         const dir = new THREE.Vector3(0, 0, 1).applyEuler(e);
         const target = c.target.clone();
-        camera.position.copy(target).add(dir.multiplyScalar(Math.abs(c.distance) * MMD_POS_SCALE * 12.5));
+        camera.position.copy(target).add(dir.multiplyScalar(Math.abs(c.distance) * MMD_POS_SCALE));
         camera.lookAt(target);
-        if (c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
+        if (c.fov) { camera.fov = Math.max(10, Math.min(80, c.fov)); camera.updateProjectionMatrix(); }
       }
     }
   }
