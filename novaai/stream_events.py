@@ -61,6 +61,8 @@ class StreamEvent:
     viewers: int = 0
     message: str = ""
     source: str = ""          # streamlabs | streamelements | twitch | webhook | manual
+    platform: str = ""        # twitch | youtube | facebook | kick | trovo | streamlabs
+    event_id: str = ""        # de-dupe key when the source provides one
     raw: dict[str, Any] = field(default_factory=dict)
 
     def expression(self, overrides: dict[str, str] | None = None) -> str:
@@ -154,8 +156,34 @@ def from_generic(payload: dict[str, Any]) -> StreamEvent | None:
     )
 
 
+# Streamlabs tags every event with the platform it came from in the top-level
+# "for" field. Fold those to canonical platform names so they can be filtered.
+_SL_PLATFORM = {
+    "streamlabs": "streamlabs",          # the tip jar (donations)
+    "twitch_account": "twitch",
+    "youtube_account": "youtube",
+    "facebook_account": "facebook",
+    "kick_account": "kick",
+    "trovo_account": "trovo",
+}
+
+
+def _sl_platform(message: dict[str, Any], etype: str) -> str:
+    """Canonical platform name for a Streamlabs event.
+
+    Uses the top-level ``for`` field; donations always come from 'streamlabs'.
+    """
+    raw = str(message.get("for") or "").strip().lower()
+    if raw in _SL_PLATFORM:
+        return _SL_PLATFORM[raw]
+    if etype == "donation":
+        return "streamlabs"
+    # Fold "<platform>_account" → "<platform>" for anything not pre-mapped.
+    return raw.replace("_account", "") if raw else ""
+
+
 def from_streamlabs(message: dict[str, Any]) -> list[StreamEvent]:
-    """Streamlabs socket 'event' payload: {type, message:[{...}]}."""
+    """Streamlabs socket 'event' payload: {type, message:[{...}], for}."""
     out: list[StreamEvent] = []
     if not isinstance(message, dict):
         return out
@@ -168,6 +196,7 @@ def from_streamlabs(message: dict[str, Any]) -> list[StreamEvent]:
     etype = alias.get(etype, etype)
     if etype not in EVENT_TYPES:
         return out
+    platform = _sl_platform(message, etype)
     items = message.get("message")
     if not isinstance(items, list):
         items = [items] if isinstance(items, dict) else []
@@ -183,6 +212,8 @@ def from_streamlabs(message: dict[str, Any]) -> list[StreamEvent]:
             viewers=_to_int(it.get("raiders") or it.get("viewers") or 0),
             message=str(it.get("message") or ""),
             source="streamlabs",
+            platform=platform,
+            event_id=str(it.get("_id") or message.get("event_id") or ""),
             raw=it,
         ))
     return out

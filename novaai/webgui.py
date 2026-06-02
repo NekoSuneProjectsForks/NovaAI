@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import collections
 import json
 import os
 import queue
@@ -203,6 +204,7 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
         "fields": [
             {"key": "streamlabs_socket_token", "label": "Streamlabs socket token (blank = off)", "type": "password"},
             {"key": "streamelements_jwt_token", "label": "StreamElements JWT token (blank = off)", "type": "password"},
+            {"key": "streamlabs_platforms", "label": "Streamlabs platforms (blank = all; e.g. twitch,kick)", "type": "str"},
         ],
     },
     "voice": {
@@ -298,6 +300,7 @@ class Api:
         self._stream_responder_thread: threading.Thread | None = None
         self._last_stream_reply = 0.0
         self.alert_sources: list = []          # Streamlabs / StreamElements clients
+        self._seen_event_ids: collections.deque[str] = collections.deque(maxlen=512)
         self._session_earnings = 0.0
         # Avatar
         self.avatar: AvatarBridge | None = None
@@ -1121,12 +1124,37 @@ class Api:
             return details["alerts"]
         return {}
 
+    def _platform_allowed(self, event: "stream_events.StreamEvent") -> bool:
+        """Filter Streamlabs events by the configured platform allow-list.
+
+        ``streamlabs_platforms`` is a comma-separated list (e.g. "twitch,kick").
+        Blank = accept all platforms. Only applies to Streamlabs events that
+        carry a platform tag; everything else passes through untouched.
+        """
+        allow = getattr(self.config, "streamlabs_platforms", "") if self.config else ""
+        if not allow or not event.platform:
+            return True
+        wanted = {p.strip() for p in allow.split(",") if p.strip()}
+        return event.platform in wanted
+
     def handle_stream_event(self, event: "stream_events.StreamEvent") -> None:
         """React to one normalized stream event: expression + cute message + tally.
 
         Called from the webhook/socket source threads, so it never raises.
         """
         try:
+            # Drop duplicate emissions (Streamlabs occasionally fires the same
+            # event twice, and per-platform forwarding can echo it).
+            if event.event_id:
+                if event.event_id in self._seen_event_ids:
+                    return
+                self._seen_event_ids.append(event.event_id)
+
+            # Platform filter: Streamlabs forwards events for EVERY linked
+            # platform (Twitch/YouTube/Facebook/Kick/...). Honor the allow-list.
+            if not self._platform_allowed(event):
+                return
+
             block = self._alerts_block()
             if block and not block.get("enabled", True):
                 return
@@ -1139,9 +1167,10 @@ class Api:
                 money = event.amount / 100.0 if event.type == "cheer" else event.amount
                 self._add_earnings(round(money, 2), event.currency, event.user, event.type)
 
-            # Show it in the chat + stream feeds.
+            # Show it in the chat + stream feeds (tag the platform when known).
             label = event.type.capitalize()
-            self._push_chat("Alert", f"[{label}] {event.user}", "system")
+            tag = f"{label} · {event.platform}" if event.platform else label
+            self._push_chat("Alert", f"[{tag}] {event.user}", "system")
             companion = self.profile.get("companion_name", "NovaAI") if self.profile else "NovaAI"
             self._push_chat(companion, message, "assistant")
 
@@ -1601,14 +1630,18 @@ class Api:
         for f in meta["fields"]:
             if f["key"] in (values or {}):
                 coerced = _coerce_game_setting(values[f["key"]], f["type"])
+                if f["key"] == "streamlabs_platforms":
+                    from .config import normalize_streamlabs_platforms
+                    coerced = normalize_streamlabs_platforms(coerced)
                 setattr(self.config, f["key"], coerced)
                 applied[f["key"]] = list(coerced) if isinstance(coerced, tuple) else coerced
         if section == "llm":
             self._reresolve_llm_url()
             if self.memory:
                 self.memory.config = self.config  # pick up new embedding settings
-        if section == "alerts" and self.stream_started:
-            # Reconnect Streamlabs/StreamElements with the new tokens immediately.
+        if section == "alerts":
+            # (Re)connect Streamlabs/StreamElements with the new tokens right
+            # away — alerts are independent of the Twitch chat connection.
             self._start_alert_sources()
         try:
             from . import database
@@ -1620,8 +1653,18 @@ class Api:
             pass
         self._push_state()
         msg = "Settings saved."
-        if section == "alerts" and not self.stream_started:
-            msg = "Settings saved. Click Connect on the Stream page to start alerts."
+        if section == "alerts":
+            from . import stream_sources
+            has_token = bool(
+                getattr(self.config, "streamlabs_socket_token", None)
+                or getattr(self.config, "streamelements_jwt_token", None)
+            )
+            if has_token and not stream_sources.available():
+                msg = ("Settings saved, but python-socketio is missing — run "
+                       "'pip install -r requirements-streaming.txt' to enable live alerts.")
+            elif self.alert_sources:
+                names = ", ".join(getattr(s, "name", "?") for s in self.alert_sources)
+                msg = f"Settings saved. Connecting alerts: {names}…"
         return {"ok": True, "msg": msg}
 
     # ── model auto-detect ───────────────────────────────────────────────────────

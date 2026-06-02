@@ -200,6 +200,35 @@ def normalize_twitch_allowed_roles(value: str | None) -> str:
     return "everyone"
 
 
+def normalize_streamlabs_platforms(value: str | None) -> str:
+    """Which platforms Streamlabs alerts are accepted from.
+
+    Streamlabs forwards events for EVERY platform linked to the account
+    (Twitch, YouTube, Facebook, Kick, Trovo, and donations themselves). Set a
+    comma-separated allow-list to only react to some of them; blank = all.
+
+    Aliases are folded to canonical names so 'YT'/'youtube_account' both map to
+    'youtube'. The special 'streamlabs' platform is donations (the tip jar).
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    alias = {
+        "twitch": "twitch", "twitch_account": "twitch", "ttv": "twitch",
+        "youtube": "youtube", "youtube_account": "youtube", "yt": "youtube",
+        "facebook": "facebook", "facebook_account": "facebook", "fb": "facebook",
+        "kick": "kick", "kick_account": "kick",
+        "trovo": "trovo", "trovo_account": "trovo",
+        "streamlabs": "streamlabs", "tips": "streamlabs", "donations": "streamlabs",
+    }
+    out: list[str] = []
+    for part in raw.replace(";", ",").split(","):
+        name = alias.get(part.strip(), part.strip())
+        if name and name not in out:
+            out.append(name)
+    return ",".join(out)
+
+
 def normalize_rag_embedding_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
@@ -345,6 +374,7 @@ class Config:
     twitch_reply_cooldown_seconds: float
     streamlabs_socket_token: str | None
     streamelements_jwt_token: str | None
+    streamlabs_platforms: str
     # RAG memory
     rag_enabled: bool
     rag_embedding_provider: str
@@ -677,6 +707,9 @@ class Config:
             ),
             streamlabs_socket_token=parse_optional_str_env("STREAMLABS_SOCKET_TOKEN"),
             streamelements_jwt_token=parse_optional_str_env("STREAMELEMENTS_JWT_TOKEN"),
+            streamlabs_platforms=normalize_streamlabs_platforms(
+                os.getenv("STREAMLABS_PLATFORMS", "")
+            ),
             rag_enabled=parse_bool_env("RAG_ENABLED", True),
             rag_embedding_provider=normalize_rag_embedding_provider(
                 os.getenv("RAG_EMBEDDING_PROVIDER", "local")

@@ -147,13 +147,15 @@ Reads your channel's chat and replies **in-character**, just like Neuro-sama. Wo
 
 NovaAI reacts to **donations, follows, subs, resubs, gift subs, cheers, raids, and hosts** with an avatar expression + a cute, **profile-flavored** spoken message — then tallies the money on a tips overlay.
 
-- **Sources**: Streamlabs & StreamElements (enter the tokens in **Settings → Stream Alerts** or via `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN`, plus `pip install -r requirements-streaming.txt`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
+- **Sources**: Streamlabs & StreamElements (enter the tokens in **Settings → Stream Alerts** or via `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
+  > ⚠️ Live Streamlabs/StreamElements alerts need the Socket.IO client — run **`pip install -r requirements-streaming.txt`** (otherwise NovaAI tells you it's missing and only the webhook/simulator work).
   ```bash
   curl -X POST "http://<host>:8800/webhook/stream?source=webhook" \
        -H "Content-Type: application/json" \
        -d '{"type":"donation","user":"Alice","amount":5,"currency":"USD"}'
   ```
   (Set `NOVA_WEBHOOK_SECRET` to require an `X-Nova-Secret` header / `?secret=`.)
+- **Platform filter** (Streamlabs only): Streamlabs forwards events for **every** platform linked to the account (Twitch, YouTube, Facebook, Kick, Trovo…). To only react to some, set **Streamlabs platforms** in Settings (or `STREAMLABS_PLATFORMS`) to a comma list like `twitch,kick` — blank = all. Duplicate emissions are de-duped automatically.
 - **Reactions** are editable per profile (`profile_details.alerts`): a cute message + expression per event type. Placeholders: `{user} {amount} {currency} {months} {tier} {viewers} {message}`.
 - **Tips overlay** ("stockings"): an OBS-ready transparent page at **`/overlay/earnings`** showing all-time / today / session totals (try `?show=today`, `?title=Goal&goal=500`). Bits convert at 100 = ~$1.
 - **Test** any reaction without a live event from the **Stream** page buttons.
@@ -408,6 +410,7 @@ Copy `.env.example` to `.env` and tweak what you need:
 |---------|---------|-------------|
 | `STREAMLABS_SOCKET_TOKEN` | *(none)* | Streamlabs socket API token for live alerts (needs `requirements-streaming.txt`) |
 | `STREAMELEMENTS_JWT_TOKEN` | *(none)* | StreamElements JWT for live alerts (needs `requirements-streaming.txt`) |
+| `STREAMLABS_PLATFORMS` | *(all)* | Comma list to filter Streamlabs platforms, e.g. `twitch,kick` (blank = all) |
 | `NOVA_WEBHOOK_SECRET` | *(none)* | If set, `/webhook/stream` requires `X-Nova-Secret` header or `?secret=` |
 
 ### 🧬 RAG Memory
