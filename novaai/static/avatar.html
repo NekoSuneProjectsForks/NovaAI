@@ -190,6 +190,7 @@
   import * as THREE from 'three';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+  import * as MMDParser from 'three/addons/libs/mmdparser.module.js';
 
   const statusEl = document.getElementById('status');
   const dropZone = document.getElementById('dropZone');
@@ -520,6 +521,207 @@
     }
   }
 
+  // ── MMD dance playback ───────────────────────────────────────────────────────
+  // Plays a .vmd motion (and optional .vmd camera + audio) on the VRM by mapping
+  // MMD's standard Japanese bone/morph names onto the VRM humanoid. Best-effort:
+  // the MMD→three handedness is a single Z-flip (MMD_FLIP). If a dance comes out
+  // mirrored front-to-back, flip MMD_FLIP.
+  const MMD_FPS = 30;
+  const MMD_FLIP = true;
+  const MMD_POS_SCALE = 0.08;   // MMD units ≈ 12.5 per metre
+  const MMD_BONE_MAP = {
+    '全ての親':'hips','全て親':'hips','センター':'hips','グルーブ':'hips',
+    '上半身':'spine','上半身2':'chest','首':'neck','頭':'head',
+    '左肩':'leftShoulder','左腕':'leftUpperArm','左ひじ':'leftLowerArm','左手首':'leftHand',
+    '右肩':'rightShoulder','右腕':'rightUpperArm','右ひじ':'rightLowerArm','右手首':'rightHand',
+    '左足':'leftUpperLeg','左ひざ':'leftLowerLeg','左足首':'leftFoot','左つま先':'leftToes',
+    '右足':'rightUpperLeg','右ひざ':'rightLowerLeg','右足首':'rightFoot','右つま先':'rightToes',
+    '左目':'leftEye','右目':'rightEye',
+    '左親指０':'leftThumbProximal','左親指１':'leftThumbProximal','左親指２':'leftThumbDistal',
+    '左人指１':'leftIndexProximal','左人指２':'leftIndexIntermediate','左人指３':'leftIndexDistal',
+    '左中指１':'leftMiddleProximal','左中指２':'leftMiddleIntermediate','左中指３':'leftMiddleDistal',
+    '左薬指１':'leftRingProximal','左薬指２':'leftRingIntermediate','左薬指３':'leftRingDistal',
+    '左小指１':'leftLittleProximal','左小指２':'leftLittleIntermediate','左小指３':'leftLittleDistal',
+    '右親指０':'rightThumbProximal','右親指１':'rightThumbProximal','右親指２':'rightThumbDistal',
+    '右人指１':'rightIndexProximal','右人指２':'rightIndexIntermediate','右人指３':'rightIndexDistal',
+    '右中指１':'rightMiddleProximal','右中指２':'rightMiddleIntermediate','右中指３':'rightMiddleDistal',
+    '右薬指１':'rightRingProximal','右薬指２':'rightRingIntermediate','右薬指３':'rightRingDistal',
+    '右小指１':'rightLittleProximal','右小指２':'rightLittleIntermediate','右小指３':'rightLittleDistal',
+  };
+  const MMD_MORPH_MAP = {
+    'まばたき':'blink','ウィンク':'blink','ウィンク２':'blink','まばたき右':'blinkRight','ウィンク右':'blinkRight',
+    '笑い':'happy','笑':'happy','喜び':'happy','にこり':'happy','怒り':'angry','真面目':'neutral',
+    '悲しい':'sad','困る':'sad','じと目':'sad',
+    'あ':'aa','い':'ih','う':'ou','え':'ee','お':'oh',
+  };
+  // Expressions MMD may drive — reset each frame so morphs never get stuck on.
+  const MMD_RESET_EXPR = ['blink','blinkRight','aa','ih','ou','ee','oh','happy','angry','sad','neutral'];
+
+  let mmd = null;          // active dance state, or null
+  let mmdAudio = null;     // HTMLAudioElement for the dance track
+
+  function _convQuat(r) {
+    return MMD_FLIP ? new THREE.Quaternion(r[0], r[1], -r[2], -r[3])
+                    : new THREE.Quaternion(r[0], r[1], r[2], r[3]);
+  }
+  function _convPos(p) {
+    return new THREE.Vector3(p[0] * MMD_POS_SCALE, p[1] * MMD_POS_SCALE,
+                             (MMD_FLIP ? -p[2] : p[2]) * MMD_POS_SCALE);
+  }
+  function _sample(keys, t, kind) {
+    // keys: sorted [{t, q?, p?, w?}]. Returns interpolated value.
+    if (!keys.length) return null;
+    if (t <= keys[0].t) return keys[0];
+    if (t >= keys[keys.length - 1].t) return keys[keys.length - 1];
+    let lo = 0, hi = keys.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; (keys[mid].t <= t ? lo = mid : hi = mid); }
+    const a = keys[lo], b = keys[hi];
+    const f = (t - a.t) / Math.max(1e-6, b.t - a.t);
+    if (kind === 'quat') return { q: a.q.clone().slerp(b.q, f) };
+    if (kind === 'pos') return { p: a.p.clone().lerp(b.p, f) };
+    return { w: a.w + (b.w - a.w) * f };
+  }
+
+  async function startMmd(payload) {
+    if (!currentVrm) { logMessage('Load a VRM before playing MMD.'); return; }
+    try {
+      stopMmd(false);
+      logMessage(`MMD: loading ${payload.motion}`);
+      const parser = new MMDParser.Parser();
+      const buf = await (await fetch(payload.motion)).arrayBuffer();
+      const vmd = parser.parseVmd(buf);
+
+      // Group bone motions -> per-VRM-bone sorted keyframes.
+      const bones = new Map();
+      const grouped = {};
+      for (const m of vmd.motions) (grouped[m.boneName] = grouped[m.boneName] || []).push(m);
+      let maxT = 0;
+      for (const [jp, list] of Object.entries(grouped)) {
+        const vrmBone = MMD_BONE_MAP[jp];
+        if (!vrmBone) continue;
+        const node = currentVrm.humanoid && currentVrm.humanoid.getNormalizedBoneNode(vrmBone);
+        if (!node) continue;
+        list.sort((a, b) => a.frameNum - b.frameNum);
+        const keys = list.map((m) => {
+          const t = m.frameNum / MMD_FPS; maxT = Math.max(maxT, t);
+          return { t, q: _convQuat(m.rotation), p: _convPos(m.position) };
+        });
+        bones.set(node, { keys, isHips: vrmBone === 'hips', base: node.position.clone() });
+      }
+
+      // Morphs -> per-expression sorted keyframes.
+      const morphs = new Map();
+      const mg = {};
+      for (const m of (vmd.morphs || [])) (mg[m.morphName] = mg[m.morphName] || []).push(m);
+      for (const [jp, list] of Object.entries(mg)) {
+        const expr = MMD_MORPH_MAP[jp];
+        if (!expr) continue;
+        list.sort((a, b) => a.frameNum - b.frameNum);
+        const keys = list.map((m) => { const t = m.frameNum / MMD_FPS; maxT = Math.max(maxT, t); return { t, w: m.weight }; });
+        const prev = morphs.get(expr) || [];
+        morphs.set(expr, prev.concat(keys).sort((a, b) => a.t - b.t));
+      }
+
+      // Optional camera track.
+      let camKeys = [];
+      if (payload.camera) {
+        try {
+          const cbuf = await (await fetch(payload.camera)).arrayBuffer();
+          const cam = parser.parseVmd(cbuf);
+          camKeys = (cam.cameras || []).slice().sort((a, b) => a.frameNum - b.frameNum)
+            .map((c) => { const t = c.frameNum / MMD_FPS; maxT = Math.max(maxT, t); return {
+              t, distance: c.distance, target: _convPos(c.position),
+              rot: c.rotation, fov: c.fov,
+            }; });
+        } catch (e) { logMessage('MMD: camera load failed (ignored).'); }
+      }
+
+      // Optional audio.
+      if (payload.audio) {
+        mmdAudio = new Audio(payload.audio);
+        mmdAudio.loop = !!payload.loop;
+        mmdAudio.play().catch(() => logMessage('MMD: autoplay blocked — click the page once.'));
+      }
+
+      mmd = { bones, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop };
+      logMessage(`MMD: playing (${bones.size} bones, ${morphs.size} morphs, ${camKeys.length} cam keys, ${maxT.toFixed(1)}s)`);
+      setModelStatus('Dancing (MMD)');
+    } catch (e) {
+      logMessage(`MMD load failed: ${e.message || e}`);
+      stopMmd(true);
+    }
+  }
+
+  function stopMmd(restore = true) {
+    if (mmdAudio) { try { mmdAudio.pause(); } catch (e) {} mmdAudio = null; }
+    if (!mmd) return;
+    // Restore bone base positions we moved (hips).
+    mmd.bones.forEach((tr, node) => { if (tr.isHips) node.position.copy(tr.base); });
+    mmd = null;
+    if (restore && currentVrm) {
+      applyRestPoseImmediate();
+      applyExpression(currentEmotion);
+      frameAvatar();
+      setModelStatus('Loaded');
+    }
+  }
+
+  function updateMmd() {
+    if (!mmd || !currentVrm) return;
+    // Sync to audio when present so motion never drifts from the music.
+    let t = mmdAudio ? mmdAudio.currentTime : (clock.elapsedTime - mmd.start);
+    if (t >= mmd.duration) {
+      if (mmd.loop) { mmd.start = clock.elapsedTime; t = 0; if (mmdAudio) { try { mmdAudio.currentTime = 0; } catch (e) {} } }
+      else { stopMmd(true); return; }
+    }
+    // Bones.
+    mmd.bones.forEach((tr, node) => {
+      const r = _sample(tr.keys, t, 'quat');
+      if (r && r.q) node.quaternion.copy(r.q);
+      if (tr.isHips) {
+        const pr = _sample(tr.keys, t, 'pos');
+        if (pr && pr.p) node.position.copy(tr.base).add(pr.p);
+      }
+    });
+    // Morphs (reset known channels first so nothing sticks).
+    const em = currentVrm.expressionManager;
+    if (em) {
+      MMD_RESET_EXPR.forEach((e) => { try { em.setValue(e, 0); } catch (x) {} });
+      mmd.morphs.forEach((keys, expr) => {
+        const r = _sample(keys, t, 'morph');
+        if (r) { try { em.setValue(expr, Math.max(0, Math.min(1, r.w))); } catch (x) {} }
+      });
+    }
+    // Camera.
+    if (mmd.camKeys.length) {
+      const c = _sampleCamera(mmd.camKeys, t);
+      if (c) {
+        const e = new THREE.Euler(-c.rot[0], -c.rot[1], c.rot[2], 'YXZ');
+        const dir = new THREE.Vector3(0, 0, 1).applyEuler(e);
+        const target = c.target.clone();
+        camera.position.copy(target).add(dir.multiplyScalar(Math.abs(c.distance) * MMD_POS_SCALE * 12.5));
+        camera.lookAt(target);
+        if (c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
+      }
+    }
+  }
+
+  function _sampleCamera(keys, t) {
+    if (!keys.length) return null;
+    if (t <= keys[0].t) return keys[0];
+    if (t >= keys[keys.length - 1].t) return keys[keys.length - 1];
+    let lo = 0, hi = keys.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; (keys[mid].t <= t ? lo = mid : hi = mid); }
+    const a = keys[lo], b = keys[hi];
+    const f = (t - a.t) / Math.max(1e-6, b.t - a.t);
+    return {
+      distance: a.distance + (b.distance - a.distance) * f,
+      target: a.target.clone().lerp(b.target, f),
+      rot: [0, 1, 2].map((i) => a.rot[i] + (b.rot[i] - a.rot[i]) * f),
+      fov: a.fov + (b.fov - a.fov) * f,
+    };
+  }
+
   function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
@@ -528,23 +730,28 @@
     if (currentVrm) {
       const em = currentVrm.expressionManager;
 
-      // Lip-sync: smoothly chase the amplitude target; decay when not speaking.
-      mouthCurrent += (mouthTarget - mouthCurrent) * Math.min(1, delta * 18);
-      if (!speaking) mouthTarget *= 0.85;
-      if (em) {
-        try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
-      }
-
-      // Body pose (rest pose + emotion + idle) and periodic blink.
-      updatePose(delta, t);
-      if (em) {
-        // Eyes stay shut while sleeping; otherwise blink periodically.
-        let blink = 1;
-        if (!lyingDown) {
-          const phase = t % 4.0;
-          blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+      if (mmd) {
+        // MMD fully drives bones + morphs (+ camera) while a dance plays.
+        updateMmd();
+      } else {
+        // Lip-sync: smoothly chase the amplitude target; decay when not speaking.
+        mouthCurrent += (mouthTarget - mouthCurrent) * Math.min(1, delta * 18);
+        if (!speaking) mouthTarget *= 0.85;
+        if (em) {
+          try { em.setValue('aa', Math.max(0, Math.min(1, mouthCurrent))); } catch (e) {}
         }
-        try { em.setValue('blink', blink); } catch (e) {}
+
+        // Body pose (rest pose + emotion + idle) and periodic blink.
+        updatePose(delta, t);
+        if (em) {
+          // Eyes stay shut while sleeping; otherwise blink periodically.
+          let blink = 1;
+          if (!lyingDown) {
+            const phase = t % 4.0;
+            blink = phase > 3.85 ? Math.sin(((phase - 3.85) / 0.15) * Math.PI) : 0;
+          }
+          try { em.setValue('blink', blink); } catch (e) {}
+        }
       }
 
       currentVrm.update(delta);
@@ -646,6 +853,11 @@
       if (payload.type === 'dance') {
         dancing = !!payload.on;
         logMessage(dancing ? 'Dancing to the music!' : 'Stopped dancing.');
+      }
+
+      if (payload.type === 'mmd') {
+        if (payload.action === 'play') startMmd(payload);
+        else if (payload.action === 'stop') stopMmd(true);
       }
 
       if (payload.type === 'reminder') {

@@ -26,7 +26,7 @@ Think Alexa, but with *attitude* and zero cloud lock-in. 🔥
 | 🔊 | **Voice Output** | XTTS-v2 streamed synthesis with cloned voices (or Google TTS lite) |
 | 💜 | **Twitch Chat** | Reads your stream chat and replies in-character — Neuro-sama style |
 | 🧬 | **Memory / Learning** | RAG long-term memory — remembers facts across sessions and gets better |
-| 🧍 | **VRM Avatar** | 3D avatar that lip-syncs, emotes, idles, and dances — OBS-ready |
+| 🧍 | **VRM Avatar** | 3D avatar that lip-syncs, emotes, idles, dances, and plays **MMD** motions — OBS-ready |
 | 🎮 | **Game Playing** | Autonomously plays Minecraft (Mineflayer) + a universal vision driver |
 | 🎤 | **Singing** | Sings songs in its own voice over an auto-found YouTube instrumental |
 | 🌐 | **Web Search** | Manual or auto-triggered lookups via SearXNG / DuckDuckGo |
@@ -116,7 +116,7 @@ NovaAI runs as a native desktop window powered by **pywebview + Tailwind CSS** �
 | 🛒 **Shopping** | Checkbox shopping list |
 | ✅ **To-Do** | Task list with done/delete |
 | 💜 **Stream** | Connect Twitch chat, watch the live feed, set the reply mode + who can talk (everyone / subscribers / moderators) |
-| 🧍 **Avatar** | Upload a VRM, open the OBS window, test emotions, toggle lip-sync |
+| 🧍 **Avatar** | Upload a VRM, open the OBS window, test emotions, toggle lip-sync, upload & play MMD dances |
 | 🎮 **Game** | Pick a driver (Minecraft/universal/etc.), set a goal, watch the live view |
 | 🎤 **Sing** | Type a song, attach/auto-find a backing track, replay saved songs |
 | 👤 **Profiles** | Create, clone, switch, delete, or import/export personalities |
@@ -172,6 +172,16 @@ A real 3D avatar (three-vrm) that **lip-syncs to the voice**, changes expression
 - Expressions are auto-picked from the mood of each reply, or test them from the **Avatar** page buttons
 - **OBS-ready**: open the transparent browser window as a Browser Source for streaming
 - Shared lip-sync seam means chat, Twitch replies, game narration, and singing **all** animate it
+
+### 💃 MMD Dances
+
+Play **MMD (`.vmd`) dance motions on your VRM avatar** — with optional audio and an optional camera motion.
+
+- **Upload** from the **Avatar** page: a `.vmd` **motion** (required), an **audio** track (`.mp3`/`.wav`/`.ogg`/`.m4a`, optional), and a `.vmd` **camera** file (optional). Files live in `data/mmd/`.
+- Pick motion + audio + camera, hit **Play Dance** (with optional **Loop**) and it retargets the MMD motion onto the VRM humanoid, syncs the audio, and (if provided) drives the camera. **Stop** returns to idle.
+- Works in the OBS overlay too (`?transparent=1`).
+
+> ⚙️ MMD→VRM retargeting is best-effort: MMD's standard (Japanese) bone & morph names are mapped onto the VRM humanoid with a single handedness flip. Most dances look right; if one comes out mirrored front-to-back, flip `MMD_FLIP` in `static/avatar.html`. Camera support is approximate.
 
 ### 🎮 Game Playing
 

@@ -1,6 +1,7 @@
 """NovaAI - pywebview desktop GUI with Tailwind CSS frontend."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -63,6 +64,7 @@ from .features import (
 from .media import handle_media_request
 from .media_player import stop_media_playback
 from .models import SessionState
+from .paths import MMD_DIR
 from .storage import (
     _safe_profile_id,
     append_history,
@@ -1220,6 +1222,85 @@ class Api:
             self._session_earnings = 0.0
         self._save_earnings_store(data)
         return {"ok": True, **self.get_earnings()}
+
+    # ── MMD dances (play .vmd motion + audio + optional camera on the avatar) ──────
+
+    _MMD_KINDS = ("motion", "audio", "camera")
+
+    @staticmethod
+    def _mmd_safe_name(filename: str) -> str:
+        import re
+        base = Path(str(filename or "")).name
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("._")
+        return safe or "file"
+
+    def upload_mmd(self, kind: str, filename: str, data_b64: str) -> dict[str, Any]:
+        """Save an uploaded MMD asset (base64) under data/mmd/<kind>/."""
+        kind = str(kind).lower()
+        if kind not in self._MMD_KINDS:
+            return {"ok": False, "msg": f"Unknown MMD kind: {kind}"}
+        name = self._mmd_safe_name(filename)
+        # Validate extension per kind so motion/camera are .vmd, audio is audio.
+        ext = Path(name).suffix.lower()
+        if kind in {"motion", "camera"} and ext != ".vmd":
+            return {"ok": False, "msg": f"{kind} must be a .vmd file."}
+        if kind == "audio" and ext not in {".mp3", ".wav", ".ogg", ".m4a"}:
+            return {"ok": False, "msg": "audio must be .mp3/.wav/.ogg/.m4a."}
+        try:
+            raw = base64.b64decode((data_b64 or "").split(",")[-1])
+        except Exception:
+            return {"ok": False, "msg": "Invalid file data."}
+        if not raw:
+            return {"ok": False, "msg": "Empty file."}
+        dest_dir = MMD_DIR / kind
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / name).write_bytes(raw)
+        return {"ok": True, "name": name}
+
+    def list_mmd(self) -> dict[str, Any]:
+        out: dict[str, list[str]] = {k: [] for k in self._MMD_KINDS}
+        for kind in self._MMD_KINDS:
+            d = MMD_DIR / kind
+            if d.is_dir():
+                out[kind] = sorted(p.name for p in d.iterdir() if p.is_file())
+        return out
+
+    def delete_mmd(self, kind: str, name: str) -> dict[str, Any]:
+        kind = str(kind).lower()
+        if kind not in self._MMD_KINDS:
+            return {"ok": False, "msg": "Unknown kind."}
+        target = MMD_DIR / kind / Path(str(name)).name
+        try:
+            if target.is_file():
+                target.unlink()
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def play_mmd(self, motion: str, audio: str = "", camera: str = "", loop: bool = False) -> dict[str, Any]:
+        """Trigger an MMD dance on the avatar overlay."""
+        if self.avatar is None:
+            return {"ok": False, "msg": "Start the avatar first."}
+        if not motion:
+            return {"ok": False, "msg": "Pick a motion (.vmd) file."}
+        def _url(kind: str, name: str) -> str:
+            return f"/mmd/{kind}/{Path(str(name)).name}" if name else ""
+        try:
+            self.avatar.publish_mmd(
+                _url("motion", motion), _url("audio", audio), _url("camera", camera), bool(loop)
+            )
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
+
+    def stop_mmd(self) -> dict[str, Any]:
+        if self.avatar is None:
+            return {"ok": False, "msg": "Avatar not running."}
+        try:
+            self.avatar.publish_mmd_stop()
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "msg": str(exc)}
 
     # ── game agent ────────────────────────────────────────────────────────────
 

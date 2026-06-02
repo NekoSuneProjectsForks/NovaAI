@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
     websockets = None
     WebSocketServerProtocol = object
 
-from .paths import AVATAR_UPLOADS_DIR, ROOT_DIR, STATIC_DIR
+from .paths import AVATAR_UPLOADS_DIR, MMD_DIR, ROOT_DIR, STATIC_DIR
 
 # Generous cap for VRM uploads (they can be tens of MB).
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
@@ -92,6 +92,17 @@ class AvatarHttpRequestHandler(BaseHTTPRequestHandler):
             # Strip any path components to prevent directory traversal.
             local_path = AVATAR_UPLOADS_DIR / Path(raw_name).name
             self._serve_file(local_path, content_type="application/octet-stream")
+            return
+
+        if path.startswith("/mmd/"):
+            # /mmd/<kind>/<name> — kind is motion|audio|camera. Serve from the
+            # MMD dir, stripping any path parts to block directory traversal.
+            parts = [p for p in unquote(path[len("/mmd/") :]).split("/") if p]
+            if len(parts) == 2 and parts[0] in {"motion", "audio", "camera"}:
+                local_path = MMD_DIR / parts[0] / Path(parts[1]).name
+                self._serve_file(local_path, content_type="application/octet-stream")
+                return
+            self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Resource not found")
@@ -361,6 +372,20 @@ class AvatarBridge:
         self._broadcast(
             {"type": "speaking", "speaking": bool(speaking), "emotion": emotion}
         )
+
+    def publish_mmd(self, motion_url: str, audio_url: str = "", camera_url: str = "", loop: bool = False) -> None:
+        """Tell the overlay to play an MMD dance (motion + optional audio/camera)."""
+        self._broadcast({
+            "type": "mmd",
+            "action": "play",
+            "motion": motion_url,
+            "audio": audio_url,
+            "camera": camera_url,
+            "loop": bool(loop),
+        })
+
+    def publish_mmd_stop(self) -> None:
+        self._broadcast({"type": "mmd", "action": "stop"})
 
     def publish_dance(self, on: bool) -> None:
         self._broadcast({"type": "dance", "on": bool(on)})

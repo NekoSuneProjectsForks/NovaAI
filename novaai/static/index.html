@@ -362,6 +362,31 @@ tailwind.config = {
           </div>
           <div class="text-[11px] text-nova-muted mt-2">Blush, shy, love, wink &amp; flirty need a VRM with those blendshapes — otherwise they fall back to a matching expression + pose.</div>
         </div>
+
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[13px] font-bold">MMD Dances</div>
+            <button onclick="loadMmd()" class="btn-secondary px-3 py-1 rounded text-[11px]">Refresh</button>
+          </div>
+          <div class="text-[11px] text-nova-muted mb-3">Upload a <b>.vmd</b> motion (required), plus optional audio (.mp3/.wav) and an optional <b>.vmd</b> camera. Then pick &amp; Play to dance it on the avatar.</div>
+          <div class="grid grid-cols-3 gap-2 mb-3">
+            <button onclick="pickMmd('motion')" class="btn-secondary px-2 py-1.5 rounded text-[11px]">+ Motion (.vmd)</button>
+            <button onclick="pickMmd('audio')" class="btn-secondary px-2 py-1.5 rounded text-[11px]">+ Audio</button>
+            <button onclick="pickMmd('camera')" class="btn-secondary px-2 py-1.5 rounded text-[11px]">+ Camera (.vmd)</button>
+          </div>
+          <input id="mmd-file-input" type="file" class="hidden" onchange="onMmdFileChosen(event)" />
+          <div class="grid grid-cols-1 gap-2 mb-3 text-[12px]">
+            <label class="flex items-center gap-2">Motion <select id="mmd-motion" class="flex-1"></select></label>
+            <label class="flex items-center gap-2">Audio <select id="mmd-audio" class="flex-1"></select></label>
+            <label class="flex items-center gap-2">Camera <select id="mmd-camera" class="flex-1"></select></label>
+            <label class="flex items-center gap-2 text-[12px]"><input type="checkbox" id="mmd-loop" class="w-4 h-4 rounded accent-violet-500" /> Loop</label>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="doPlayMmd()" class="btn-primary px-4 py-1.5 rounded text-[12px]">Play Dance</button>
+            <button onclick="doStopMmd()" class="btn-secondary px-4 py-1.5 rounded text-[12px]">Stop</button>
+          </div>
+          <div id="mmd-status" class="text-[11px] text-nova-muted mt-2"></div>
+        </div>
       </div>
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -1115,6 +1140,62 @@ async function loadAvatar() {
     $('avatar-idle').checked = !!s.idle_motion;
     $('avatar-transparent').checked = !!s.transparent_bg;
   } catch(e) { console.error(e); }
+  loadMmd();
+}
+
+// ── MMD dances ─────────────────────────────────────────────────────────────
+let _mmdPickKind = 'motion';
+function pickMmd(kind) {
+  _mmdPickKind = kind;
+  const inp = $('mmd-file-input');
+  inp.accept = kind === 'audio' ? '.mp3,.wav,.ogg,.m4a,audio/*' : '.vmd';
+  inp.value = '';
+  inp.click();
+}
+async function onMmdFileChosen(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  $('mmd-status').textContent = `Uploading ${file.name}…`;
+  try {
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result));
+      r.onerror = rej;
+      r.readAsDataURL(file);
+    });
+    const r = await api().upload_mmd(_mmdPickKind, file.name, b64);
+    if (!r || !r.ok) { showNotification((r && r.msg) || 'Upload failed.'); $('mmd-status').textContent=''; return; }
+    $('mmd-status').textContent = `Uploaded ${r.name}`;
+    loadMmd();
+  } catch(e) { console.error(e); showNotification('Upload failed.'); $('mmd-status').textContent=''; }
+}
+function _fillMmdSelect(id, items, allowNone) {
+  const sel = $(id); if (!sel) return;
+  const prev = sel.value;
+  const opts = (allowNone ? ['<option value="">(none)</option>'] : [])
+    .concat((items||[]).map(n => `<option value="${escAttr(n)}">${escHtml(n)}</option>`));
+  sel.innerHTML = opts.join('');
+  if (prev) sel.value = prev;
+}
+async function loadMmd() {
+  try {
+    const m = await api().list_mmd();
+    _fillMmdSelect('mmd-motion', m.motion, false);
+    _fillMmdSelect('mmd-audio', m.audio, true);
+    _fillMmdSelect('mmd-camera', m.camera, true);
+  } catch(e) { console.error(e); }
+}
+async function doPlayMmd() {
+  const motion = $('mmd-motion').value;
+  if (!motion) { showNotification('Upload and pick a .vmd motion first.'); return; }
+  try {
+    const r = await api().play_mmd(motion, $('mmd-audio').value, $('mmd-camera').value, $('mmd-loop').checked);
+    if (r && !r.ok && r.msg) showNotification(r.msg);
+    else $('mmd-status').textContent = 'Playing on the avatar…';
+  } catch(e) { console.error(e); }
+}
+async function doStopMmd() {
+  try { await api().stop_mmd(); $('mmd-status').textContent = 'Stopped.'; } catch(e) { console.error(e); }
 }
 
 async function doStartAvatar() {
