@@ -196,6 +196,13 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
             {"key": "twitch_reply_cooldown_seconds", "label": "Reply cooldown (sec)", "type": "float"},
         ],
     },
+    "alerts": {
+        "label": "Stream Alerts (donations / subs / raids)",
+        "fields": [
+            {"key": "streamlabs_socket_token", "label": "Streamlabs socket token (blank = off)", "type": "password"},
+            {"key": "streamelements_jwt_token", "label": "StreamElements JWT token (blank = off)", "type": "password"},
+        ],
+    },
     "voice": {
         "label": "Voice (TTS)",
         "fields": [
@@ -1402,6 +1409,9 @@ class Api:
             self._reresolve_llm_url()
             if self.memory:
                 self.memory.config = self.config  # pick up new embedding settings
+        if section == "alerts" and self.stream_started:
+            # Reconnect Streamlabs/StreamElements with the new tokens immediately.
+            self._start_alert_sources()
         try:
             from . import database
 
@@ -1411,7 +1421,10 @@ class Api:
         except Exception:
             pass
         self._push_state()
-        return {"ok": True, "msg": "Settings saved."}
+        msg = "Settings saved."
+        if section == "alerts" and not self.stream_started:
+            msg = "Settings saved. Click Connect on the Stream page to start alerts."
+        return {"ok": True, "msg": msg}
 
     # ── model auto-detect ───────────────────────────────────────────────────────
 

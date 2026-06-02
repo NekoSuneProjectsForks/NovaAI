@@ -143,7 +143,7 @@ Reads your channel's chat and replies **in-character**, just like Neuro-sama. Wo
 
 NovaAI reacts to **donations, follows, subs, resubs, gift subs, cheers, raids, and hosts** with an avatar expression + a cute, **profile-flavored** spoken message — then tallies the money on a tips overlay.
 
-- **Sources**: Streamlabs & StreamElements (set `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN` and `pip install -r requirements-streaming.txt`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
+- **Sources**: Streamlabs & StreamElements (enter the tokens in **Settings → Stream Alerts** or via `STREAMLABS_SOCKET_TOKEN` / `STREAMELEMENTS_JWT_TOKEN`, plus `pip install -r requirements-streaming.txt`), or a universal **webhook** so **Twitch EventSub, Tangia, sound-alert tools, or any bot** can drive reactions:
   ```bash
   curl -X POST "http://<host>:8800/webhook/stream?source=webhook" \
        -H "Content-Type: application/json" \
