@@ -188,7 +188,7 @@ Play **MMD (`.vmd`) dance motions on your VRM avatar** — with optional audio a
 
 > ⚙️ MMD→VRM retargeting follows the conversion used by the working [vrm-dance-viewer](https://github.com/JLChnToZ/vrm-dance-viewer) (axis mode 2: position.x and quaternion x/w negated). Torso, head, arms and hands track. A live **MMD body tuning** panel on the **non-transparent** overlay (`http://<host>:8766/`) lets you flip the facing/axis (0–3), knee bend, leg-IK, arm-down and camera zoom and watch the dance update; choices save automatically.
 
-> 🐞 **Known issue — leg tracking (MMD on VRM):** legs are now driven by **pure FK** (the VMD's direct upper-leg/lower-leg/foot rotations) — **body, torso, head, arms, hands and feet track**. Leg **IK is disabled by default** (it caused snapping/drift/frozen hips); it remains an experimental toggle in the tuning panel. Caveat: MMD dances that animate the legs *only* through foot **IK targets** (足ＩＫ) will have stiffer legs in FK mode, since the FK leg rotations in those files are minimal. Help/PRs welcome (see [SystemAnimatorOnline](https://github.com/ButzYung/SystemAnimatorOnline) for a reference VMD-on-VRM implementation).
+> 🦵 **Legs:** driven by **CCD foot-IK** (the foot follows the VMD's 足ＩＫ target) with a **knee hinge** so the knee can't snap/hyper-extend — modelled on [vrm-dance-viewer](https://github.com/JLChnToZ/vrm-dance-viewer). If a model's knees bend the wrong way, flip **Knees** in the tuning panel; you can also switch **Leg IK off** to fall back to raw FK. Body, torso, head, arms, hands, legs and feet all track.
 
 ### 🎮 Game Playing
 
