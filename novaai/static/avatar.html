@@ -1016,19 +1016,28 @@
     if (T.spine) T.spine.quaternion.copy(low).invert().multiply(up);
     if (T.chest) T.chest.quaternion.copy(up2 || I);
 
-    // Leg IK (CCD + knee hinge), after FK + torso so the hips are placed first.
+    // Leg IK (analytic 2-bone), after FK + torso so the hips are placed first.
     // Target = rest ankle + the animated foot-IK offset, so feet stay planted as
-    // the hips move. The knee is constrained to a single-axis hinge (like
-    // vrm-dance-viewer) so it can never snap/hyper-extend.
+    // the hips move. Bones are aimed with MINIMAL rotation (setFromUnitVectors)
+    // so the leg never twists around its own axis — that twist is what made the
+    // feet splay outward (duck-footed) under CCD. The knee bends toward the
+    // forward pole; flip with the panel's Knees toggle.
     if (mmd.ik) {
       currentVrm.scene.updateMatrixWorld(true);
+      const pole = new THREE.Vector3(0, 0, mmdCfg.knee).applyQuaternion(mmd.ik.sceneQuat);
       for (const side of ['left', 'right']) {
         const leg = mmd.ik[side];
         if (!leg) continue;
         const off = sampP([MMD_IK[side].ik]);
         if (!off) continue;
         const target = leg.ankleRest.clone().add(off.clone().applyQuaternion(mmd.ik.sceneQuat));
-        _solveLegCCD(leg, target);
+        const A = leg.up.getWorldPosition(new THREE.Vector3());
+        const B = _solveTwoBone(A, target, leg.L1, leg.L2, pole);
+        _aimBone(leg.up, A, B, _DOWN);
+        leg.up.updateWorldMatrix(true, false);
+        const Bw = leg.lo.getWorldPosition(new THREE.Vector3());
+        _aimBone(leg.lo, Bw, target, _DOWN);
+        leg.lo.updateWorldMatrix(true, false);
       }
     }
 
