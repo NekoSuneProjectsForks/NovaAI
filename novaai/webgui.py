@@ -209,7 +209,7 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
         "label": "Voice (TTS)",
         "fields": [
             {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
-            {"key": "tts_output", "label": "Voice output", "type": "select", "options": ["speaker", "browser", "both"]},
+            {"key": "audio_output", "label": "Audio output (voice/singing/music)", "type": "select", "options": ["speaker", "browser", "both"]},
             {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
             {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
             {"key": "xtts_speed", "label": "Speed", "type": "float"},
@@ -975,9 +975,11 @@ class Api:
         """Speak text via TTS, driving avatar emotion + lip-sync if present."""
         # Where the spoken reply plays: server "speaker", the "browser" (avatar
         # overlay does its own playback + lip-sync), or "both".
-        out = getattr(self.config, "tts_output", "speaker")
-        to_speaker = out in ("speaker", "both")
+        out = getattr(self.config, "audio_output", "speaker")
         to_browser = out in ("browser", "both") and self.avatar is not None
+        # Speaker plays when selected, OR as a fallback when "browser" is chosen
+        # but no avatar overlay is running (so a reply is never silently dropped).
+        to_speaker = out in ("speaker", "both") or (out == "browser" and self.avatar is None)
         # In speaker mode the server playback blocks, so it owns the speaking
         # window (start now / stop in finally). In browser-only mode the overlay
         # plays the audio itself and manages speaking + lip-sync from the 'tts'
@@ -1877,15 +1879,39 @@ class Api:
                 self._push_status("Composing a song...")
                 engine = make_singing_engine(self.config)
                 path = engine.sing(lyrics.strip(), melody_ref.strip() or None)
-                if self.avatar is not None:
+                out = getattr(self.config, "audio_output", "speaker")
+                to_browser = out in ("browser", "both") and self.avatar is not None
+                to_speaker = out in ("speaker", "both") or (out == "browser" and self.avatar is None)
+                if self.avatar is not None and to_speaker:
                     try:
                         self.avatar.publish_speaking(True, "happy")
                     except Exception:
                         pass
                 self._avatar_dance(True)
-                cb = self._amplitude_cb() if self.avatar is not None else None
                 self._push_status("Singing...")
-                play_audio_file(path, self.config.speaker_device_index, on_amplitude=cb)
+                if to_browser:
+                    # The overlay plays the song (and lip-syncs to it).
+                    self.avatar.serve_audio(path)
+                    self.avatar.publish_audio(
+                        f"/browser-audio?t={int(time.time() * 1000)}", kind="singing",
+                        emotion="happy", lipsync=True,
+                    )
+                if to_speaker:
+                    cb = self._amplitude_cb() if self.avatar is not None else None
+                    play_audio_file(path, self.config.speaker_device_index, on_amplitude=cb)
+                elif to_browser:
+                    # Browser plays async — keep dancing for ~the song's length.
+                    try:
+                        from .tts import _decode_audio_mono
+                        from pathlib import Path as _P
+                        samples, sr = _decode_audio_mono(_P(path))
+                        dur = (samples.size / sr) if (samples is not None and sr) else 0
+                    except Exception:
+                        dur = 0
+                    waited = 0.0
+                    while dur and waited < dur and not self._stopped():
+                        time.sleep(0.25)
+                        waited += 0.25
             except Exception as exc:
                 self._push_chat("System", f"Singing failed: {exc}", "system")
             finally:
