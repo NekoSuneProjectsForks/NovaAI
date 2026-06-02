@@ -530,8 +530,12 @@
   // the MMD→three handedness is a single Z-flip (MMD_FLIP). If a dance comes out
   // mirrored front-to-back, flip MMD_FLIP.
   const MMD_FPS = 30;
-  const MMD_FLIP = true;
   const MMD_POS_SCALE = 0.08;   // MMD units ≈ 12.5 per metre
+  // MMD (left-handed) → VRM (right-handed) conversion. The exact axis flip is
+  // model/convention dependent, so it's selectable: open the overlay with
+  // ?mmdaxis=0..3 (and ?armangle=35) to find the one that looks right, then tell
+  // me which number — I'll bake it as the default. 1 = chirality-preserving Z-flip.
+  const MMD_AXIS = parseInt((QUERY && QUERY.get('mmdaxis')) || '1', 10);
   const MMD_BONE_MAP = {
     '全ての親':'hips','全て親':'hips','センター':'hips','グルーブ':'hips',
     '上半身':'spine','上半身2':'chest','首':'neck','頭':'head',
@@ -566,7 +570,7 @@
   // and elbows/hands follow wrong. We pre-rotate the shoulders/upper-arms down by
   // the A-pose angle; children (lower arm, hand, fingers) inherit it. Tune
   // MMD_ARM_ANGLE if arms sit too high/low. (~35° is typical for MMD.)
-  const MMD_ARM_ANGLE = 0.61;   // radians (~35°)
+  const MMD_ARM_ANGLE = (parseFloat((QUERY && QUERY.get('armangle')) || '35') || 35) * Math.PI / 180;
   function _restOffset() {
     const Z = new THREE.Vector3(0, 0, 1);
     const off = {};
@@ -581,12 +585,22 @@
   let mmdAudio = null;     // HTMLAudioElement for the dance track
 
   function _convQuat(r) {
-    return MMD_FLIP ? new THREE.Quaternion(r[0], r[1], -r[2], -r[3])
-                    : new THREE.Quaternion(r[0], r[1], r[2], r[3]);
+    const x = r[0], y = r[1], z = r[2], w = r[3];
+    switch (MMD_AXIS) {
+      case 0:  return new THREE.Quaternion(x, y, z, w);     // as-is
+      case 2:  return new THREE.Quaternion(x, -y, -z, w);   // mirror X axis
+      case 3:  return new THREE.Quaternion(-x, y, -z, w);   // mirror Y axis
+      default: return new THREE.Quaternion(x, y, -z, -w);   // 1: Z-flip (chirality-preserving)
+    }
   }
   function _convPos(p) {
-    return new THREE.Vector3(p[0] * MMD_POS_SCALE, p[1] * MMD_POS_SCALE,
-                             (MMD_FLIP ? -p[2] : p[2]) * MMD_POS_SCALE);
+    const s = MMD_POS_SCALE;
+    switch (MMD_AXIS) {
+      case 0:  return new THREE.Vector3(p[0] * s,  p[1] * s,  p[2] * s);
+      case 2:  return new THREE.Vector3(-p[0] * s, p[1] * s,  p[2] * s);
+      case 3:  return new THREE.Vector3(p[0] * s,  p[1] * s, -p[2] * s);
+      default: return new THREE.Vector3(p[0] * s,  p[1] * s, -p[2] * s);
+    }
   }
   function _sample(keys, t, kind) {
     // keys: sorted [{t, q?, p?, w?}]. Returns interpolated value.
