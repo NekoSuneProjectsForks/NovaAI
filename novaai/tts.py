@@ -24,12 +24,18 @@ except (ImportError, OSError):  # OSError: PortAudio shared lib missing
     sd = None  # type: ignore[assignment]
 try:
     import torch
-except ImportError:
+except (ImportError, OSError) as exc:
     torch = None  # type: ignore[assignment]
+    _torch_import_error: BaseException | None = exc
+else:
+    _torch_import_error = None
 try:
     from TTS.api import TTS
-except ImportError:
+except (ImportError, OSError) as exc:
     TTS = None  # type: ignore[assignment]
+    _tts_import_error: BaseException | None = exc
+else:
+    _tts_import_error = None
 
 from .audio_input import (
     VOICE_EXTRAS_HINT,
@@ -42,7 +48,10 @@ from .audio_input import (
 def _require_xtts() -> None:
     """Raise a friendly error if the local XTTS stack (coqui-tts + torch) is absent."""
     if TTS is None or torch is None:
-        raise RuntimeError(VOICE_EXTRAS_HINT)
+        import_error = _tts_import_error or _torch_import_error
+        if import_error is None:
+            raise RuntimeError(VOICE_EXTRAS_HINT)
+        raise RuntimeError(f"{VOICE_EXTRAS_HINT}\n\nImport error: {import_error}") from import_error
 from .config import Config
 from .models import SessionState
 from .paths import AUDIO_DIR, ROOT_DIR, XTTS_STREAM_END
