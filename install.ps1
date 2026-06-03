@@ -11,7 +11,7 @@
         .\install.ps1
 
     What it does:
-        1. Checks for (and optionally installs) Python 3.11+
+        1. Checks for (and optionally installs) Python 3.10+
         2. Asks which LLM provider you want (Ollama, OpenAI, OpenRouter, LM Studio, custom)
         3. Installs Ollama if needed, or configures API keys for cloud providers
         4. Clones or downloads NovaAI
@@ -29,7 +29,7 @@ $ProgressPreference = "SilentlyContinue"
 $REPO_URL     = "https://github.com/cachenetworks/NovaAI"
 $REPO_BRANCH  = "main"
 $INSTALL_DIR  = "$env:USERPROFILE\NovaAI"
-$PYTHON_MIN   = [version]"3.11.0"
+$PYTHON_MIN   = [version]"3.10.0"
 $PYTHON_WINGET_ID = "Python.Python.3.11"
 $OLLAMA_WINGET_ID = "Ollama.Ollama"
 
@@ -186,38 +186,43 @@ function Show-Banner {
 # ── Step 1: Python ───────────────────────────────────────────────────────────
 
 function Ensure-Python {
-    Write-Step "1/7" "Checking for Python 3.11+..."
+    Write-Step "1/7" "Checking for Python 3.10+..."
 
-    $pythonCmd = $null
-    foreach ($cmd in @("python", "python3", "py")) {
-        if (Has-Command $cmd) {
+    # Prefer a Python the voice/ML stack ships wheels for (3.12 / 3.11 / 3.10) via
+    # the py launcher first, so a box that ALSO has a brand-new 3.13/3.14 doesn't
+    # get picked — coqui-tts/numba/llvmlite/torch don't have wheels there yet and
+    # pip would try (and fail) to build them from source.
+    if (Has-Command "py") {
+        foreach ($v in @("3.12", "3.11", "3.10")) {
             try {
-                $ver = & $cmd --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
+                $ver = & py -$v --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
                 if ($ver -and ([version]$ver -ge $PYTHON_MIN)) {
-                    $pythonCmd = $cmd
-                    Write-Ok "Found $cmd $ver"
-                    return $pythonCmd
+                    Write-Ok "Found py -$v ($ver)"
+                    return "py -$v"
                 }
             } catch { }
         }
     }
 
-    if (Has-Command "py") {
-        try {
-            $ver = & py -3.11 --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
-            if ($ver -and ([version]$ver -ge $PYTHON_MIN)) {
-                Write-Ok "Found py -3.11 ($ver)"
-                return "py"
-            }
-        } catch { }
+    # Otherwise use whatever python/python3 is on PATH (must be >= 3.10).
+    foreach ($cmd in @("python", "python3")) {
+        if (Has-Command $cmd) {
+            try {
+                $ver = & $cmd --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
+                if ($ver -and ([version]$ver -ge $PYTHON_MIN)) {
+                    Write-Ok "Found $cmd $ver"
+                    return $cmd
+                }
+            } catch { }
+        }
     }
 
-    Write-Warn "Python 3.11+ not found."
+    Write-Warn "Python 3.10+ not found."
 
     if (-not (Has-Winget)) {
         Write-Fail "winget is not available to install Python automatically."
-        Write-Fail "Please install Python 3.11+ from https://python.org and run this again."
-        throw "Python 3.11+ is required."
+        Write-Fail "Please install Python 3.10-3.12 from https://python.org and run this again."
+        throw "Python 3.10+ is required."
     }
 
     if (Ask-YesNo "Install Python 3.11 via winget?") {
@@ -226,9 +231,10 @@ function Ensure-Python {
         if ($LASTEXITCODE -ne 0) { throw "Failed to install Python via winget." }
         Refresh-Path
         Write-Ok "Python installed."
+        if (Has-Command "py") { return "py -3.11" }
         return "python"
     } else {
-        throw "Python 3.11+ is required. Install it and run this again."
+        throw "Python 3.10+ is required. Install it and run this again."
     }
 }
 
@@ -445,12 +451,12 @@ function Run-Setup {
 
     Push-Location $INSTALL_DIR
     try {
-        if ($PythonCmd -eq "py") {
-            $setupExit = Invoke-Native "py -3.11 setup.py --setup"
-        } else {
-            $setupExit = Invoke-Native "$PythonCmd setup.py --setup"
+        # $PythonCmd is already a runnable invocation ("python", "python3", or
+        # "py -3.11"), so it can be passed straight through.
+        $setupExit = Invoke-Native "$PythonCmd setup.py --setup"
+        if ($setupExit -ne 0) {
+            throw "Setup script failed (exit $setupExit). See the pip/setup output above for the real cause."
         }
-        if ($setupExit -ne 0) { throw "Setup script failed." }
         Write-Ok "Setup complete."
     } finally {
         Pop-Location

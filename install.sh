@@ -14,7 +14,7 @@ set -euo pipefail
 REPO_URL="https://github.com/cachenetworks/NovaAI"
 REPO_BRANCH="main"
 INSTALL_DIR="$HOME/NovaAI"
-PYTHON_MIN="3.11"
+PYTHON_MIN="3.10"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
@@ -223,8 +223,12 @@ ensure_python() {
     # (this function's stdout is captured via `python_cmd=$(ensure_python)`).
     step "1/7" "Checking for Python ${PYTHON_MIN}+..." >&2
 
+    # Prefer a Python the voice/ML stack ships wheels for (3.12 / 3.11 / 3.10)
+    # before a bare python3, so a box that ALSO has a brand-new 3.13/3.14 doesn't
+    # get picked — coqui-tts/numba/llvmlite/torch have no wheels there yet and pip
+    # would try (and fail) to build them from source.
     local python_cmd=""
-    for cmd in python3 python; do
+    for cmd in python3.12 python3.11 python3.10 python3 python; do
         if has_cmd "$cmd"; then
             local ver
             ver=$("$cmd" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -240,10 +244,10 @@ ensure_python() {
     fail "Python ${PYTHON_MIN}+ not found." >&2
     echo "" >&2
     info "Install Python ${PYTHON_MIN}+ using your package manager:" >&2
-    info "  Ubuntu/Debian:  sudo apt install python3.11 python3.11-venv" >&2
-    info "  Fedora:         sudo dnf install python3.11" >&2
+    info "  Ubuntu/Debian:  sudo apt install python3.12 python3.12-venv" >&2
+    info "  Fedora:         sudo dnf install python3.12" >&2
     info "  Arch:           sudo pacman -S python" >&2
-    info "  macOS:          brew install python@3.11" >&2
+    info "  macOS:          brew install python@3.12" >&2
     echo "" >&2
     exit 1
 }
@@ -737,5 +741,19 @@ main() {
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────
+
+# Mirror the Windows installer: if any step aborts (e.g. setup.py / pip fails
+# under `set -e`), point the user at the issue tracker instead of dying silently.
+on_error() {
+    local rc=$?
+    [[ $rc -eq 0 ]] && return
+    echo ""
+    fail "Installation failed (exit $rc). See the messages above for the real cause."
+    echo ""
+    info "If you need help, open an issue at:"
+    info "  $REPO_URL/issues"
+    echo ""
+}
+trap on_error EXIT
 
 main "$@"
