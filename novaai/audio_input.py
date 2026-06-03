@@ -18,7 +18,7 @@ except ImportError:
     sr = None  # type: ignore[assignment]
 try:
     import torch
-except ImportError:
+except (ImportError, OSError):
     torch = None  # type: ignore[assignment]
 
 from .config import Config
