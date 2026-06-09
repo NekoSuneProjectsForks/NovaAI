@@ -89,20 +89,31 @@ python app.py --web          # 🌐 Same web UI, started directly (0.0.0.0:8800)
 
 ## 🌐 Network Access (web mode)
 
-In **`--web`** mode NovaAI is meant to be reached from other devices, so the web UI **and** its sibling services bind to **all interfaces** — reachable over your LAN, **Tailscale**, a reverse proxy, or a Cloudflare tunnel:
+In **`--web`** mode the **dashboard, avatar overlay and avatar WebSocket all share the single web port** — they're reverse-proxied behind it as paths, so **one origin** (and **one Cloudflare tunnel hostname on 443**) serves everything. The Minecraft Live View keeps its own port.
 
-| Service | Port | Notes |
-|---------|------|-------|
-| 🖥️ Web dashboard | `8800` | `NOVA_WEB_HOST` / `NOVA_WEB_PORT` |
-| 🧍 Avatar overlay (HTTP + WebSocket) | `8766` / `8765` | for OBS / browser overlays |
-| 🎮 Minecraft Live View | `8768` | 3D world + inventory + thoughts |
+| Service | Port | Reach it at |
+|---------|------|-------------|
+| 🖥️ Web dashboard | `8800` | `http://<host>:8800/` |
+| 🧍 Avatar overlay (page) | `8800` | `http://<host>:8800/avatar` |
+| 🔌 Avatar WebSocket | `8800` | `ws(s)://<host>:8800/avatar-ws` |
+| 💸 Tips / earnings overlay | `8800` | `http://<host>:8800/overlay/earnings` |
+| 🎮 Minecraft Live View | `8768` | `http://<host>:8768/` (own port) |
 
-Just open the dashboard at e.g. `http://192.168.1.107:8800/` (or your Tailscale IP). When you open the **Avatar** window or **Live View**, NovaAI opens a **new browser tab on the same host you're using** (`192.168.1.107:8766`, `:8768`, …) — it never launches a browser on the Pi itself.
+The avatar bridge still listens internally on `8766`/`8765`, but only on **localhost** now — the web port proxies to it, so those ports never need to be exposed. Just open the dashboard at e.g. `http://192.168.1.107:8800/` (or your Tailscale IP); opening the **Avatar** window points a new tab at `…:8800/avatar` on the same host you're already using.
 
-- 🎬 **OBS Browser Sources:** add the **avatar** at `http://<host>:8766/?transparent=1` (transparent — shows *only* the avatar) and the **tips overlay** at `http://<host>:8800/overlay/earnings`.
-- 🖥️ The **desktop GUI** (`--gui`) is a local app, so these services stay bound to **`127.0.0.1`** (localhost only).
-- 🔒 To restrict a service in web mode, set its host: `NOVA_BIND_HOST` (all services), or per-service `NOVA_AVATAR_HOST` / `MC_VIEWER_HOST` (e.g. `127.0.0.1`).
-- ☁️ **Cloudflare tunnel:** the tab uses whatever host you browsed from, with the service port appended — expose those ports on that hostname in your tunnel config.
+- ☁️ **Cloudflare tunnel (one hostname):** point a single ingress at the web port — everything (dashboard, `/avatar`, the `/avatar-ws` WebSocket, `/overlay/earnings`) rides it. No `:8766`/`:8765`/`:5555` ports to forward; the page builds same-origin `wss://your-domain/avatar-ws` automatically:
+  ```yaml
+  ingress:
+    - hostname: nova.example.com
+      service: http://localhost:8800
+    # optional: Minecraft live view on its own hostname
+    - hostname: mc.example.com
+      service: http://localhost:8768
+    - service: http_status:404
+  ```
+- 🎬 **OBS Browser Sources:** avatar at `http://<host>:8800/avatar?transparent=1` (shows *only* the avatar) and the tips overlay at `http://<host>:8800/overlay/earnings`.
+- 🖥️ The **desktop GUI** (`--gui`) is a local app, so these services stay bound to **`127.0.0.1`** (localhost only) and use their own ports directly.
+- 🔒 The avatar bridge is localhost-only in web mode; `MC_VIEWER_HOST` controls the Live View's exposure (default `0.0.0.0`). Set per-service hosts to override.
 
 > ⚠️ These services have **no authentication**, so binding to all interfaces exposes them to everyone on your LAN / tailnet. That's usually fine on a trusted network; lock them down with the host overrides above if not.
 
@@ -192,7 +203,7 @@ Play **MMD (`.vmd`) dance motions on your VRM avatar** — with optional audio a
 - Works in the OBS overlay too (`?transparent=1`).
 - **Move the camera by hand** on the web view: **drag** to orbit, **scroll** to zoom, **right-drag** to pan, **double-click** to snap back to auto framing. (Grabbing the camera overrides a dance's own camera; controls are off in the fixed OBS overlay.)
 
-> ⚙️ MMD→VRM retargeting follows the conversion used by the working [vrm-dance-viewer](https://github.com/JLChnToZ/vrm-dance-viewer) (axis mode 2: position.x and quaternion x/w negated). Torso, head, arms and hands track. A live **MMD body tuning** panel on the **non-transparent** overlay (`http://<host>:8766/`) lets you flip the facing/axis (0–3), knee bend, leg-IK, arm-down and camera zoom and watch the dance update; choices save automatically.
+> ⚙️ MMD→VRM retargeting follows the conversion used by the working [vrm-dance-viewer](https://github.com/JLChnToZ/vrm-dance-viewer) (axis mode 2: position.x and quaternion x/w negated). Torso, head, arms and hands track. A live **MMD body tuning** panel on the **non-transparent** overlay (`http://<host>:8800/avatar`) lets you flip the facing/axis (0–3), knee bend, leg-IK, arm-down and camera zoom and watch the dance update; choices save automatically.
 
 > 🦵 **Legs:** driven by **CCD foot-IK** (the foot follows the VMD's 足ＩＫ target) with a **knee hinge** so the knee can't snap/hyper-extend — modelled on [vrm-dance-viewer](https://github.com/JLChnToZ/vrm-dance-viewer). If a model's knees bend the wrong way, flip **Knees** in the tuning panel; you can also switch **Leg IK off** to fall back to raw FK. Body, torso, head, arms, hands, legs and feet all track.
 
@@ -443,9 +454,9 @@ Copy `.env.example` to `.env` and tweak what you need:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `NOVA_WEB_HOST` / `NOVA_WEB_PORT` | `0.0.0.0` / `8800` | Web dashboard bind host + port |
-| `NOVA_BIND_HOST` | *(follows mode)* | Bind host for sibling services (avatar, Live View). Web mode → `0.0.0.0`, GUI → `127.0.0.1` |
+| `NOVA_BIND_HOST` | *(follows mode)* | Bind host for sibling services. Web mode → `127.0.0.1` (avatar is proxied behind the web port); GUI → `127.0.0.1`. The Live View pins `MC_VIEWER_HOST=0.0.0.0` in web mode |
 | `NOVA_AVATAR_HOST` | *(follows `NOVA_BIND_HOST`)* | Avatar HTTP/WebSocket bind host override |
-| `MC_VIEWER_HOST` | *(follows `NOVA_BIND_HOST`)* | Minecraft Live View bind host override |
+| `MC_VIEWER_HOST` | `0.0.0.0` in web mode | Minecraft Live View bind host (stays public on its own port; set `127.0.0.1` to keep it local) |
 
 ### 🎤 Singing
 
