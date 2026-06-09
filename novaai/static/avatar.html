@@ -868,7 +868,7 @@
         tryPlayMmdAudio();
       }
 
-      mmd = { tracks, simple, torso, hipsBase, ik, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop };
+      mmd = { tracks, simple, torso, hipsBase, ik, morphs, camKeys, duration: maxT || 1, start: clock.elapsedTime, loop: !!payload.loop, waitAudio: !!payload.audio };
       const ikLegs = ik ? ['left', 'right'].filter((s) => ik[s]).length : 0;
       logMessage(`MMD: playing (${simple.length} bones + torso, ${ikLegs} IK legs, ${morphs.size} morphs, ${camKeys.length} cam keys, ${maxT.toFixed(1)}s)`);
       setModelStatus('Dancing (MMD)');
@@ -995,9 +995,22 @@
 
   function updateMmd() {
     if (!mmd || !currentVrm) return;
-    // Clock-based timeline so the FULL motion always plays — don't tie it to the
-    // song (a shorter song would otherwise freeze the dance halfway). Audio runs
-    // in parallel from the same start, so they stay in sync.
+    // Lock the dance to the SONG's real start. Audio has load/decode/autoplay
+    // latency before sound actually comes out, so kicking off the motion the
+    // instant we call play() makes the dance run ahead of the music. Hold the
+    // dance at frame 0 until the audio is genuinely playing, then re-baseline the
+    // clock to the audio position and run clock-based from there (clock-based,
+    // not audio-slaved, so a song SHORTER than the dance doesn't freeze it).
+    if (mmd.waitAudio) {
+      const playing = mmdAudio && !mmdAudio.paused && mmdAudio.currentTime > 0;
+      const dead = !mmdAudio || mmdAudio.error;   // 404 / decode fail — don't freeze forever
+      if (playing || dead) {
+        mmd.waitAudio = false;
+        mmd.start = clock.elapsedTime - (playing ? mmdAudio.currentTime : 0);
+      } else {
+        mmd.start = clock.elapsedTime;            // freeze at frame 0 until the song begins
+      }
+    }
     let t = clock.elapsedTime - mmd.start;
     if (t >= mmd.duration) {
       if (mmd.loop) {
@@ -1213,9 +1226,19 @@
     );
   }
 
+  function avatarWsUrl() {
+    // Desktop GUI / opening the file directly: talk to the bridge on its port.
+    if (location.protocol === 'file:' || !location.hostname) return 'ws://127.0.0.1:8765';
+    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+    // Opened straight against the avatar HTTP server (:8766) — bridge is :8765.
+    if (location.port === '8766') return `${wsProto}://${location.hostname}:8765`;
+    // Served through the consolidated --web port: the WebSocket shares this
+    // origin as /avatar-ws, so one Cloudflare tunnel hostname (443) covers it.
+    return `${wsProto}://${location.host}/avatar-ws`;
+  }
+
   function connectSocket() {
-    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsUrl = `${protocol}://${location.hostname}:8765`;
+    const wsUrl = avatarWsUrl();
     ws = new WebSocket(wsUrl);
 
     ws.addEventListener('open', () => {

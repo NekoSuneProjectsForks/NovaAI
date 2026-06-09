@@ -1134,10 +1134,13 @@ async function doSing() {
 }
 
 // ── Service URLs ───────────────────────────────────────────────────────────
-// Sibling services (avatar overlay :8766, Minecraft live view :8768) live on
-// their own ports. Build their URLs from THIS page's location so they match
-// however you reached NovaAI — LAN IP, Tailscale, or a Cloudflare tunnel host.
-// In the desktop GUI the page is file://, so fall back to the backend URL.
+// The avatar overlay (page + WebSocket + media) is merged onto THIS web port, so
+// it's reached as a same-origin path (/avatar, /avatar-ws, …) — one origin, one
+// Cloudflare tunnel hostname. The Minecraft live view keeps its own port, so its
+// URL is still built from this page's host + the service port.
+function originUrl(path) {
+  return location.origin + (path || '/');
+}
 function serviceUrl(port, path, fallbackUrl) {
   if (!port || location.protocol === 'file:' || !location.hostname) return fallbackUrl || '';
   const proto = location.protocol === 'https:' ? 'https:' : 'http:';
@@ -1272,11 +1275,11 @@ async function doOpenAvatarWindow() {
   try {
     const r = await api().open_avatar_window();
     if (r && !r.ok && r.msg) { showNotification(r.msg); return; }
-    // Web mode: open client-side so the URL matches this host. GUI mode: the
-    // backend already opened it on the local machine.
+    // Web mode: open the avatar overlay on THIS origin (/avatar), so it works
+    // over a Cloudflare tunnel. GUI mode (file://) the backend already opened it.
     if (r && r.ok && location.protocol !== 'file:') {
-      const u = serviceUrl(r.port, r.path, r.url);
-      if (u) window.open(u, '_blank');
+      const transparent = (r.path || '').indexOf('transparent') !== -1;
+      window.open(originUrl('/avatar' + (transparent ? '?transparent=1' : '')), '_blank');
     }
   } catch(e) { console.error(e); }
 }

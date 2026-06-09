@@ -32,12 +32,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import webgui
+from . import webgui, webproxy
 from .paths import AVATAR_UPLOADS_DIR, STATIC_DIR
 from .storage import ensure_runtime_dirs
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8800
+# The avatar + earnings overlays get their own dedicated port so OBS / a tunnel
+# can point at just the overlays, separate from the dashboard. Override with
+# NOVA_OVERLAY_PORT; set it to the same value as the web port to merge them.
+DEFAULT_OVERLAY_PORT = 8801
+
+# The avatar bridge is the one sibling merged onto the web port; the Minecraft
+# live view keeps its own port. These mirror AvatarBridge's defaults and are
+# proxied over localhost so only the web port itself is public.
+AVATAR_HTTP_PORT = 8766
+AVATAR_WS_PORT = 8765
+
+# GET paths forwarded to the avatar HTTP server (8766). The overlay page itself
+# is served locally; only its media/upload routes live on the avatar bridge.
+_AVATAR_GET_PREFIXES = ("/mmd/",)
+_AVATAR_GET_EXACT = {"/tts-audio", "/browser-audio"}
 
 # Methods the frontend may NOT call over HTTP (private/dunder are blocked anyway).
 _BLOCKED_METHODS = {"start_reminder_checker"}
@@ -132,21 +147,35 @@ def _guess_content_type(path: Path) -> str:
 class NovaWebHandler(BaseHTTPRequestHandler):
     server_version = "NovaAIWeb/1.0"
 
-    # Set on the server instance in serve().
+    # Set on the bound handler subclass in serve().
     api: webgui.Api
     clients: _SseClients
+    avatar_http: tuple[str, int]
+    avatar_ws: tuple[str, int]
 
     def log_message(self, format: str, *args: object) -> None:  # quieter logs
         return
 
     # ── GET ──────────────────────────────────────────────────────────────────
     def do_GET(self) -> None:
+        # WebSocket handshakes arrive as a GET with an Upgrade header. Bridge them
+        # to the right sibling so the browser only ever speaks to this one origin
+        # (wss://host/avatar-ws instead of the old wss://host:8765).
+        if webproxy.is_ws_upgrade(self):
+            self._route_ws()
+            return
+
         path = unquote(self.path.split("?", 1)[0])
         if path in {"/", "/index.html"}:
             self._serve_index()
             return
         if path == "/events":
             self._serve_events()
+            return
+        if path in {"/avatar", "/avatar/"}:
+            # The avatar overlay page. Served here so it shares this origin; its
+            # WebSocket and media then resolve to /avatar-ws and /tts-audio etc.
+            self._serve_file(STATIC_DIR / "avatar.html")
             return
         if path.startswith("/uploads/"):
             name = Path(path[len("/uploads/"):]).name  # strip traversal
@@ -155,11 +184,23 @@ class NovaWebHandler(BaseHTTPRequestHandler):
         if path in {"/overlay/earnings", "/earnings"}:
             self._serve_file(STATIC_DIR / "earnings.html")
             return
+        # Avatar bridge media (TTS/singing audio, MMD dance assets) -> 8766.
+        if path in _AVATAR_GET_EXACT or path.startswith(_AVATAR_GET_PREFIXES):
+            webproxy.proxy_http(self, self.avatar_http, self.path)
+            return
         # Anything else: serve from the static dir (logo, avatar.html, etc.).
         target = (STATIC_DIR / path.lstrip("/")).resolve()
         if STATIC_DIR.resolve() in target.parents or target == STATIC_DIR.resolve():
             self._serve_file(target)
             return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _route_ws(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path in {"/avatar-ws", "/avatar-ws/"}:
+            webproxy.proxy_ws(self, self.avatar_ws, "/")
+            return
+        # The Minecraft live view keeps its own port, so no other WS lives here.
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def _serve_index(self) -> None:
@@ -265,6 +306,10 @@ class NovaWebHandler(BaseHTTPRequestHandler):
         if raw_path == "/webhook/stream":
             self._handle_stream_webhook()
             return
+        if raw_path == "/upload":
+            # VRM uploads from the avatar overlay -> avatar HTTP server (8766).
+            webproxy.proxy_http(self, self.avatar_http, self.path)
+            return
         if raw_path != "/api/call":
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
@@ -336,6 +381,13 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def serve(host: str | None = None, port: int | None = None) -> None:
     host = host if host is not None else os.getenv("NOVA_WEB_HOST", DEFAULT_HOST)
     if port is None:
@@ -344,11 +396,20 @@ def serve(host: str | None = None, port: int | None = None) -> None:
         except ValueError:
             port = DEFAULT_PORT
 
-    # Web mode is reachable from other devices, so the sibling services (avatar
-    # overlay on 8766/8765, Minecraft live view on 8768) should bind to the same
-    # interface the web UI does. The browser builds their URLs from its own
-    # location, so they match whatever host you used (LAN IP, Tailscale, tunnel).
-    os.environ.setdefault("NOVA_BIND_HOST", host)
+    # The avatar overlay (page + media on 8766, WebSocket on 8765) is now reached
+    # *through* this web port via proxy paths (/avatar, /avatar-ws, /tts-audio,
+    # …), so one origin — one Cloudflare tunnel hostname on 443 — serves it all.
+    # That means the avatar bridge only needs to listen on localhost; this port
+    # is the only public one.
+    os.environ.setdefault("NOVA_BIND_HOST", "127.0.0.1")
+    # The Minecraft live view keeps its own port, reachable as before — pin it to
+    # all interfaces so it stays public even though the avatar went localhost
+    # (minecraft.py otherwise inherits NOVA_BIND_HOST). Override with MC_VIEWER_HOST.
+    os.environ.setdefault("MC_VIEWER_HOST", "0.0.0.0")
+
+    avatar_http_port = _int_env("NOVA_AVATAR_HTTP_PORT", AVATAR_HTTP_PORT)
+    avatar_ws_port = _int_env("NOVA_AVATAR_WS_PORT", AVATAR_WS_PORT)
+    overlay_port = _int_env("NOVA_OVERLAY_PORT", DEFAULT_OVERLAY_PORT)
 
     ensure_runtime_dirs()
 
@@ -358,17 +419,44 @@ def serve(host: str | None = None, port: int | None = None) -> None:
 
     api = webgui.Api()
 
-    handler_attrs = {"api": api, "clients": clients}
+    handler_attrs = {
+        "api": api,
+        "clients": clients,
+        "avatar_http": ("127.0.0.1", avatar_http_port),
+        "avatar_ws": ("127.0.0.1", avatar_ws_port),
+    }
     handler_cls = type("NovaWebHandlerBound", (NovaWebHandler,), handler_attrs)
 
     httpd = ThreadingHTTPServer((host, port), handler_cls)
     httpd.daemon_threads = True
 
+    # The overlays (avatar page + WebSocket + media, earnings) get their own port
+    # so OBS / a tunnel can target just them, independent of the dashboard. The
+    # same handler serves every route, so 8801 answers the overlay paths directly.
+    # Setting NOVA_OVERLAY_PORT == the web port merges them back onto one port.
+    overlay_httpd = None
+    if overlay_port != port:
+        try:
+            overlay_httpd = ThreadingHTTPServer((host, overlay_port), handler_cls)
+            overlay_httpd.daemon_threads = True
+            threading.Thread(target=overlay_httpd.serve_forever, daemon=True).start()
+        except OSError as exc:
+            print(f"  (overlay port {overlay_port} unavailable: {exc} — "
+                  "overlays remain on the web port)")
+            overlay_httpd = None
+
     shown_host = _local_ip() if host in {"0.0.0.0", "::"} else host
+    overlay_host = shown_host
+    overlay_shown = overlay_port if overlay_httpd is not None else port
     print("NovaAI web UI is running (headless mode).")
     print(f"  Open in a browser on your network:  http://{shown_host}:{port}")
     if host in {"0.0.0.0", "::"}:
         print(f"  Local:                              http://127.0.0.1:{port}")
+    print(f"  Dashboard:         http://{shown_host}:{port}")
+    print(f"  Overlays live on their own port ({overlay_shown}):")
+    print(f"    avatar overlay   http://{overlay_host}:{overlay_shown}/avatar")
+    print(f"    avatar socket    ws://{overlay_host}:{overlay_shown}/avatar-ws")
+    print(f"    earnings overlay http://{overlay_host}:{overlay_shown}/overlay/earnings")
     print("Press Ctrl+C to stop.")
     try:
         httpd.serve_forever()
@@ -377,6 +465,9 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     finally:
         httpd.shutdown()
         httpd.server_close()
+        if overlay_httpd is not None:
+            overlay_httpd.shutdown()
+            overlay_httpd.server_close()
 
 
 def main() -> None:
