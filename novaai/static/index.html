@@ -334,12 +334,24 @@ tailwind.config = {
             <div class="text-[13px] font-bold">VRM Avatar</div>
             <span id="avatar-badge" class="text-[11px] font-semibold text-nova-muted">Off</span>
           </div>
-          <div class="text-[12px] text-nova-muted mb-3">Render a VRM model that lip-syncs to NovaAI's voice and reacts with expressions. Open the avatar window to upload a .vrm and to capture it in OBS.</div>
+          <div class="text-[12px] text-nova-muted mb-3">Render a VRM model that lip-syncs to NovaAI's voice and reacts with expressions. Upload your .vrm here, then open the avatar window to capture it in OBS.</div>
           <div class="flex flex-wrap gap-2">
             <button id="avatar-enable-btn" onclick="doStartAvatar()" class="btn-primary px-4 py-2 rounded-lg text-[12px] font-semibold">Enable</button>
             <button id="avatar-disable-btn" onclick="doStopAvatar()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Disable</button>
-            <button onclick="doOpenAvatarWindow()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Open Avatar Window (upload / OBS)</button>
+            <button onclick="doOpenAvatarWindow()" class="btn-secondary px-4 py-2 rounded-lg text-[12px] font-semibold">Open Avatar Window (OBS)</button>
           </div>
+        </div>
+
+        <div class="card p-5">
+          <div class="text-[13px] font-bold mb-3">Avatar Model (.vrm)</div>
+          <div class="text-[11px] text-nova-muted mb-3">Upload the VRM here. The public overlay no longer accepts uploads, so viewers can't swap your model.</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="pickVrm()" class="btn-secondary px-3 py-1.5 rounded text-[12px]">📦 Choose .vrm…</button>
+            <span id="vrm-pick-name" class="text-[12px] text-nova-muted truncate flex-1 min-w-[120px]">No file chosen</span>
+            <button id="vrm-upload-btn" onclick="doUploadVrm()" class="btn-primary px-4 py-1.5 rounded text-[12px] font-semibold" disabled>Upload</button>
+          </div>
+          <input id="vrm-file-input" type="file" accept=".vrm" class="hidden" onchange="onVrmChosen(event)" />
+          <div id="vrm-status" class="text-[11px] text-nova-muted mt-2"></div>
         </div>
 
         <div class="card p-5">
@@ -1282,6 +1294,35 @@ async function doOpenAvatarWindow() {
       window.open(originUrl('/avatar' + (transparent ? '?transparent=1' : '')), '_blank');
     }
   } catch(e) { console.error(e); }
+}
+let _vrmPending = null;
+function pickVrm() {
+  const inp = $('vrm-file-input');
+  inp.value = '';
+  inp.click();
+}
+function onVrmChosen(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  if (!/\.vrm$/i.test(file.name)) { showNotification('Pick a .vrm file.'); return; }
+  _vrmPending = file;
+  const span = $('vrm-pick-name');
+  if (span) { span.textContent = file.name; span.classList.remove('text-nova-muted'); span.classList.add('text-nova-text'); }
+  const btn = $('vrm-upload-btn'); if (btn) btn.disabled = false;
+}
+async function doUploadVrm() {
+  if (!_vrmPending) { showNotification('Choose a .vrm first.'); return; }
+  const btn = $('vrm-upload-btn'); if (btn) btn.disabled = true;
+  $('vrm-status').textContent = 'Uploading avatar…';
+  try {
+    const b64 = await _readFileB64(_vrmPending);
+    const r = await api().upload_vrm(_vrmPending.name, b64);
+    if (!r || !r.ok) { $('vrm-status').textContent = (r && r.msg) || 'Upload failed.'; if (btn) btn.disabled = false; return; }
+    $('vrm-status').textContent = 'Avatar uploaded: ' + (r.name || _vrmPending.name);
+    _vrmPending = null;
+    const span = $('vrm-pick-name'); if (span) { span.textContent = 'No file chosen'; span.classList.add('text-nova-muted'); span.classList.remove('text-nova-text'); }
+    loadAvatar();
+  } catch(e) { console.error(e); $('vrm-status').textContent = 'Upload failed.'; if (btn) btn.disabled = false; }
 }
 async function doAvatarToggle(key, val) { try { await api().set_avatar_option(key, val); } catch(e) { console.error(e); } }
 async function doTestEmotion(em) { try { const r = await api().test_avatar_emotion(em); if (r && !r.ok && r.msg) showNotification(r.msg); } catch(e) { console.error(e); } }

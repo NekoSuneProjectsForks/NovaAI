@@ -65,7 +65,7 @@ from .features import (
 from .media import handle_media_request
 from .media_player import stop_media_playback
 from .models import SessionState
-from .paths import MMD_DIR
+from .paths import AVATAR_UPLOADS_DIR, MMD_DIR
 from .storage import (
     _safe_profile_id,
     append_history,
@@ -1097,6 +1097,39 @@ class Api:
         except Exception:
             pass
         return {"ok": True}
+
+    def upload_vrm(self, filename: str, data_b64: str) -> dict[str, Any]:
+        """Save a .vrm uploaded from the dashboard and load it on the avatar.
+
+        Uploads only happen here (the operator's dashboard) — the public avatar
+        overlay no longer accepts file drops, so a stream viewer can't swap the
+        model. Mirrors ``upload_mmd_file``: base64 in over the api() bridge so it
+        works in both web and desktop (file://) mode.
+        """
+        import re
+
+        ext = Path(str(filename)).suffix.lower()
+        if ext != ".vrm":
+            return {"ok": False, "msg": "Avatar must be a .vrm file."}
+        try:
+            raw = base64.b64decode((data_b64 or "").split(",")[-1])
+        except Exception:
+            return {"ok": False, "msg": "Invalid file data."}
+        if not raw:
+            return {"ok": False, "msg": "Empty file."}
+        base = Path(str(filename)).name
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("._") or "upload.vrm"
+        if not safe_name.lower().endswith(".vrm"):
+            safe_name += ".vrm"
+        try:
+            AVATAR_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            target = AVATAR_UPLOADS_DIR / safe_name
+            target.write_bytes(raw)
+        except Exception as exc:
+            return {"ok": False, "msg": f"Save failed: {exc}"}
+        # Persist to the profile and push it to any running overlay.
+        self._on_vrm_uploaded(target)
+        return {"ok": True, "name": safe_name, "url": f"/uploads/{safe_name}"}
 
     def _avatar_dance(self, on: bool) -> None:
         if self.avatar is not None:

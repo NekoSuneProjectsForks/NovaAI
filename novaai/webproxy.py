@@ -8,7 +8,7 @@ standard 443 — serves the whole thing::
     /avatar                   avatar overlay page (served directly)
     /avatar-ws                avatar WebSocket bridge   ->  127.0.0.1:8765
     /tts-audio /browser-audio
-    /mmd/*  /upload           avatar media + VRM upload ->  127.0.0.1:8766
+    /mmd/* /uploads/*         avatar media + VRM files  ->  127.0.0.1:8766
     /mc                       Minecraft live-view dashboard ->  127.0.0.1:8768
     /world/* /inv/* /feed
     /socket.io/*              Minecraft 3D + inventory (HTTP polling + WS)

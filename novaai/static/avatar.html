@@ -64,22 +64,6 @@
       font-size: 0.95rem;
       line-height: 1.4;
     }
-    #dropZone {
-      min-height: 160px;
-      border: 2px dashed #64d2ff;
-      border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      color: #a8c8e8;
-      padding: 18px;
-      cursor: pointer;
-      transition: background 0.2s ease;
-    }
-    #dropZone.dragover {
-      background: rgba(100, 210, 255, 0.12);
-    }
     button {
       border: none;
       border-radius: 10px;
@@ -133,7 +117,6 @@
     body.obs-mode .panel:not(:has(#viewer)),
     body.obs-mode .panel > div,
     body.obs-mode .side-section,
-    body.obs-mode #dropZone,
     body.obs-mode #log { display: none !important; }
     body.obs-mode main { grid-template-columns: 1fr; gap: 0; padding: 0; }
     body.obs-mode .panel { background: transparent !important; border: none !important; padding: 0 !important; gap: 0 !important; }
@@ -173,17 +156,8 @@
 <main>
   <section class="panel">
     <div>
-      <h2>VRM Upload</h2>
-      <p class="text-muted">Drag and drop a .vrm model here or choose a file to upload it into NovaAI.</p>
-    </div>
-    <div id="dropZone">Drop VRM file here or click to select</div>
-    <input id="fileInput" type="file" accept=".vrm" hidden />
-    <div id="log"></div>
-  </section>
-  <section class="panel">
-    <div>
       <h2>Avatar Viewer</h2>
-      <p class="text-muted">The avatar viewer connects to the local WebSocket bridge and renders the latest uploaded model.</p>
+      <p class="text-muted">Renders the model uploaded from the NovaAI dashboard. Drag to orbit, scroll to zoom, right-drag to pan, double-click to reset. (Uploads are done in the dashboard, not here.)</p>
     </div>
     <canvas id="viewer"></canvas>
     <div class="side-section">
@@ -191,6 +165,7 @@
       <div class="badge" id="modelBadge">No model loaded</div>
       <div class="badge" id="expressionBadge">Expression: neutral</div>
     </div>
+    <div id="log"></div>
   </section>
 </main>
 <script type="importmap">
@@ -211,8 +186,6 @@
   import * as MMDParser from 'mmd-parser';
 
   const statusEl = document.getElementById('status');
-  const dropZone = document.getElementById('dropZone');
-  const fileInput = document.getElementById('fileInput');
   const log = document.getElementById('log');
   const connectionBadge = document.getElementById('connectionBadge');
   const modelBadge = document.getElementById('modelBadge');
@@ -237,16 +210,17 @@
     requestAnimationFrame(resize);  // canvas is now full-viewport; re-fit
   }
 
-  // Mouse camera: drag to orbit, scroll to zoom, right-drag to pan. Enabled on
-  // the normal web view; off in the OBS overlay (?transparent=1) so the source
-  // stays fixed. Double-click to snap back to auto framing.
+  // Mouse camera: drag to orbit, scroll to zoom, right-drag to pan. On by
+  // default, including the OBS overlay (?transparent=1) so you can frame the
+  // shot there too; pass ?nocontrols=1 to lock the camera fixed. Double-click
+  // to snap back to auto framing.
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.enablePan = true;
   controls.minDistance = 0.15;
   controls.maxDistance = 50;
-  controls.enabled = !TRANSPARENT;
+  controls.enabled = !QUERY.has('nocontrols');
   let manualCamera = false;          // user grabbed the camera → stop auto-framing it
   controls.addEventListener('start', () => { manualCamera = true; });
   canvas.addEventListener('dblclick', () => { manualCamera = false; frameAvatar(); });
@@ -254,7 +228,7 @@
   // cached page). If you DON'T see this line in the log, hard-refresh the page.
   setTimeout(() => logMessage(controls.enabled
     ? '🖱 Camera controls ON — drag to orbit, scroll to zoom, right-drag to pan, double-click to reset.'
-    : 'Camera controls off (OBS overlay mode).'), 0);
+    : 'Camera controls off (?nocontrols=1).'), 0);
 
   const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
   scene.add(light);
@@ -1330,52 +1304,6 @@
       statusEl.textContent = 'Unable to connect to the WebSocket bridge.';
     });
   }
-
-  async function uploadFile(file) {
-    const formData = new FormData();
-    formData.append('file', file, file.name);
-    const response = await fetch('/upload', { method: 'POST', body: formData });
-    if (!response.ok) {
-      throw new Error(`Upload failed: ${response.status}`);
-    }
-    const body = await response.json();
-    return body.url;
-  }
-
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragenter', (event) => {
-    event.preventDefault();
-    dropZone.classList.add('dragover');
-  });
-  dropZone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-  });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-  dropZone.addEventListener('drop', async (event) => {
-    event.preventDefault();
-    dropZone.classList.remove('dragover');
-    const file = event.dataTransfer.files[0];
-    if (!file) return;
-    try {
-      const url = await uploadFile(file);
-      logMessage(`Uploaded ${file.name}`);
-      loadVrm(url);
-    } catch (error) {
-      logMessage(error.message);
-    }
-  });
-
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    try {
-      const url = await uploadFile(file);
-      logMessage(`Uploaded ${file.name}`);
-      loadVrm(url);
-    } catch (error) {
-      logMessage(error.message);
-    }
-  });
 
   refreshButton.addEventListener('click', () => {
     if (targetUrl) {

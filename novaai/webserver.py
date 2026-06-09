@@ -306,10 +306,9 @@ class NovaWebHandler(BaseHTTPRequestHandler):
         if raw_path == "/webhook/stream":
             self._handle_stream_webhook()
             return
-        if raw_path == "/upload":
-            # VRM uploads from the avatar overlay -> avatar HTTP server (8766).
-            webproxy.proxy_http(self, self.avatar_http, self.path)
-            return
+        # NOTE: the public /upload proxy was removed on purpose. VRM uploads now
+        # go through the operator dashboard (/api/call -> upload_vrm) so a viewer
+        # hitting the public avatar overlay origin can't swap the model.
         if raw_path != "/api/call":
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
