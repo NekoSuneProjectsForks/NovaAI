@@ -524,7 +524,7 @@ function Ask-GPU {
 
         Write-Info "Installing CUDA $cudaLabel PyTorch... (this downloads ~2 GB)"
         $venvPython = "$INSTALL_DIR\.venv\Scripts\python.exe"
-        $pipExit = Invoke-Native "`"$venvPython`" -m pip install --upgrade --index-url $cudaUrl torch torchaudio -q"
+        $pipExit = Invoke-Native "`"$venvPython`" -m pip install --upgrade --index-url $cudaUrl torch torchaudio torchcodec -q"
         if ($pipExit -eq 0) {
             Write-Ok "CUDA $cudaLabel PyTorch installed. Voice synthesis will be much faster!"
         } else {
@@ -533,7 +533,7 @@ function Ask-GPU {
     } elseif ($choice -eq 1) {
         Write-Ok "Using CPU mode. You can add GPU support later."
         Write-Info "To add GPU later, run:"
-        Write-Info "  $INSTALL_DIR\.venv\Scripts\python.exe -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio"
+        Write-Info "  $INSTALL_DIR\.venv\Scripts\python.exe -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio torchcodec"
     } else {
         Write-Ok "Skipped. Default CPU mode works out of the box."
     }
