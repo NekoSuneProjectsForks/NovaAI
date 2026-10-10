@@ -34,8 +34,6 @@ from .storage import (
     save_profile_by_id,
     set_active_profile,
 )
-from .avatar import AvatarBridge
-from .paths import AVATAR_UPLOADS_DIR
 from .tts import (
     describe_selected_speaker,
     describe_tts_voice,
@@ -161,12 +159,6 @@ class NovaAIGui:
         self.config = Config.from_env()
         self.active_profile_id = get_active_profile_id()
         self.profile = load_profile()
-        self.avatar_state = {
-            "emotion": "neutral",
-            "danger": False,
-        }
-        # self.avatar_bridge = AvatarBridge(on_vrm_loaded=self._on_vrm_uploaded)
-        # self.avatar_bridge.start()
         self.state = SessionState(
             voice_enabled=self.config.voice_enabled,
             input_mode=self.config.input_mode,
@@ -176,7 +168,6 @@ class NovaAIGui:
         self.config.voice_enabled = False
 
         self.root = tk.Tk()
-        self.avatar_expression_text = tk.StringVar(value="Expression: neutral")
         self.root.title(f"{self.profile['companion_name']} Studio")
         self.root.configure(bg=PALETTE["bg"])
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -1449,7 +1440,6 @@ class NovaAIGui:
         ).grid(row=1, column=0, sticky="w", pady=(0, 14))
 
         self._create_tab_button(nav, "main", "Main", row=2)
-        self._create_tab_button(nav, "avatar", "Avatar", row=3)
         self._create_tab_button(nav, "reminders", "Reminders", row=4)
         self._create_tab_button(nav, "calendar", "Calendar", row=5)
         self._create_tab_button(nav, "shopping", "Shopping", row=6)
@@ -1463,13 +1453,12 @@ class NovaAIGui:
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
 
-        for tab_key in ("main", "avatar", "reminders", "calendar", "shopping", "todo", "chat", "profiles", "settings"):
+        for tab_key in ("main", "reminders", "calendar", "shopping", "todo", "chat", "profiles", "settings"):
             frame = tk.Frame(content, bg=PALETTE["bg"])
             frame.grid(row=0, column=0, sticky="nsew")
             self.tab_frames[tab_key] = frame
 
         self._build_main_tab(self.tab_frames["main"])
-        self._build_avatar_tab(self.tab_frames["avatar"])
         self._build_reminders_tab(self.tab_frames["reminders"])
         self._build_calendar_tab(self.tab_frames["calendar"])
         self._build_shopping_tab(self.tab_frames["shopping"])
@@ -1700,30 +1689,6 @@ class NovaAIGui:
             columnspan=2,
         )
 
-
-    def _build_avatar_tab(self, parent: tk.Widget) -> None:
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(0, weight=1)
-
-        avatar_card = self._make_shell_card(parent, bg=PALETTE["card_alt"])
-        avatar_card.grid(row=0, column=0, sticky="nsew")
-
-        tk.Label(
-            avatar_card,
-            text="Avatar AI System",
-            bg=PALETTE["card_alt"],
-            fg=PALETTE["text"],
-            font=("Bahnschrift SemiBold", 16),
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            avatar_card,
-            text="Avatar AI system coming soon",
-            bg=PALETTE["card_alt"],
-            fg=PALETTE["muted"],
-            font=("Segoe UI", 12),
-            wraplength=760,
-            justify="left",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
     def _build_reminders_tab(self, parent: tk.Widget) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -2443,102 +2408,6 @@ class NovaAIGui:
             self._refresh_alarms_list()
             self._set_status_text("Alarm deleted.")
 
-    def _get_avatar_settings(self) -> dict[str, object]:
-        avatar_settings = self.profile["profile_details"].setdefault("avatar", {})
-        if not isinstance(avatar_settings, dict):
-            avatar_settings = {
-                "enabled": False,
-                "vrm_path": "",
-                "last_loaded_vrm_path": "",
-                "websocket_url": "ws://127.0.0.1:8765",
-            }
-            self.profile["profile_details"]["avatar"] = avatar_settings
-        if "enabled" not in avatar_settings:
-            avatar_settings["enabled"] = False
-        if "vrm_path" not in avatar_settings:
-            avatar_settings["vrm_path"] = ""
-        if "last_loaded_vrm_path" not in avatar_settings:
-            avatar_settings["last_loaded_vrm_path"] = ""
-        if "websocket_url" not in avatar_settings:
-            avatar_settings["websocket_url"] = "ws://127.0.0.1:8765"
-        return avatar_settings
-
-    def _save_avatar_settings(self) -> None:
-        self.profile = save_profile_by_id(self.active_profile_id, self.profile)
-        self._refresh_avatar_status()
-
-    def _refresh_avatar_status(self) -> None:
-        # Avatar disabled
-        pass
-
-    def _copy_vrm_to_uploads(self, source: Path) -> Path:
-        AVATAR_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        target_path = AVATAR_UPLOADS_DIR / source.name
-        if not target_path.exists() or source.stat().st_mtime > target_path.stat().st_mtime:
-            try:
-                from shutil import copy2
-
-                copy2(source, target_path)
-            except Exception:
-                target_path = source
-        return target_path
-
-    def _on_vrm_uploaded(self, path: Path) -> None:
-        avatar_settings = self._get_avatar_settings()
-        uploaded_path = self._copy_vrm_to_uploads(path)
-        avatar_settings["enabled"] = True
-        avatar_settings["vrm_path"] = str(uploaded_path)
-        avatar_settings["last_loaded_vrm_path"] = str(uploaded_path)
-        self._save_avatar_settings()
-        public_url = f"/uploads/{uploaded_path.name}"
-        # self.avatar_bridge.publish_avatar(public_url)
-        self._refresh_avatar_status()
-        self._append_system_message(
-            f"New avatar VRM uploaded: {uploaded_path.name}. Open the Avatar Portal to view it."
-        )
-
-    def _load_saved_vrm(self) -> None:
-        avatar_settings = self._get_avatar_settings()
-        last_path = str(avatar_settings.get("last_loaded_vrm_path", "") or avatar_settings.get("vrm_path", ""))
-        if last_path:
-            self._refresh_avatar_status()
-            try:
-                path = Path(last_path)
-                if path.exists():
-                    copied = self._copy_vrm_to_uploads(path)
-                    self._append_system_message(f"Restoring last VRM: {copied.name}")
-                    # self.avatar_bridge.publish_avatar(f"/uploads/{copied.name}")
-                else:
-                    self._append_system_message("Saved VRM path was not found locally.")
-            except Exception:
-                self._append_system_message("Unable to restore saved VRM path.")
-
-    def open_avatar_ui(self) -> None:
-        # try:
-        #     webbrowser.open(self.avatar_bridge.get_frontend_url())
-        #     self._set_status_text("Opening the avatar portal in your browser.")
-        # except Exception as exc:
-        #     self._set_status_text(f"Unable to open browser: {exc}")
-        self._set_status_text("Avatar AI system coming soon")
-
-    def pick_vrm_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title="Choose a VRM model",
-            filetypes=[("VRM model", "*.vrm"), ("All files", "*")],
-        )
-        if not file_path:
-            return
-        self._on_vrm_uploaded(Path(file_path))
-
-    def reload_avatar(self) -> None:
-        avatar_settings = self._get_avatar_settings()
-        last_path = str(avatar_settings.get("last_loaded_vrm_path", "") or avatar_settings.get("vrm_path", ""))
-        if last_path:
-            # self.avatar_bridge.publish_avatar(f"/uploads/{Path(last_path).name}")
-            self._set_status_text("Avatar AI system coming soon")
-        else:
-            self._set_status_text("Avatar AI system coming soon")
-
     def _standardize_reminders(self) -> list[dict[str, object]]:
         reminders = self.profile["profile_details"].setdefault("reminders", [])
         if not isinstance(reminders, list):
@@ -2591,7 +2460,7 @@ class NovaAIGui:
         }
         reminders = self._standardize_reminders()
         reminders.append(reminder)
-        self._save_avatar_settings()
+        self.profile = save_profile_by_id(self.active_profile_id, self.profile)
         self._refresh_reminders_list()
         self._set_status_text(f"Reminder scheduled for {reminder['due']}.")
 
@@ -2604,7 +2473,7 @@ class NovaAIGui:
         if index < 0 or index >= len(reminders):
             return
         del reminders[index]
-        self._save_avatar_settings()
+        self.profile = save_profile_by_id(self.active_profile_id, self.profile)
         self._refresh_reminders_list()
         self._set_status_text("Reminder removed.")
 
@@ -2689,20 +2558,6 @@ class NovaAIGui:
                 "warning",
                 "alarm",
             ]
-        )
-
-    def _send_avatar_state(self, user_text: str, assistant_text: str) -> None:
-        emotion = self._detect_emotion(user_text + " " + assistant_text)
-        danger = self._detect_danger(user_text + " " + assistant_text)
-        self.avatar_state["emotion"] = emotion
-        self.avatar_state["danger"] = danger
-        self.avatar_bridge.publish_state(
-            {
-                "emotion": emotion,
-                "danger": danger,
-                "user_text": user_text,
-                "assistant_text": assistant_text,
-            }
         )
 
     def _selected_profile_id(self) -> str | None:
@@ -3965,7 +3820,6 @@ class NovaAIGui:
             )
         )
 
-        # self._send_avatar_state(user_text, reply)
 
         if self.state.voice_enabled:
             self._safe_ui(lambda: self._set_status_text("Speaking the reply..."))
