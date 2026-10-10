@@ -14,7 +14,7 @@ set -euo pipefail
 REPO_URL="https://github.com/cachenetworks/NovaAI"
 REPO_BRANCH="main"
 INSTALL_DIR="$HOME/NovaAI"
-PYTHON_MIN="3.10"
+PYTHON_MIN="3.11"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
@@ -129,126 +129,33 @@ set_env_value() {
     fi
 }
 
-# True when there's no graphical display (e.g. a headless Raspberry Pi over SSH).
-is_headless() {
-    [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]
-}
-
-# Detect the system package manager + a sudo prefix (so we can install system libs).
-detect_pkg_manager() {
-    PKG_MGR=""
-    PKG_INSTALL=""
-    if has_cmd apt-get; then
-        PKG_MGR="apt"; PKG_INSTALL="apt-get install -y"
-    elif has_cmd dnf; then
-        PKG_MGR="dnf"; PKG_INSTALL="dnf install -y"
-    elif has_cmd pacman; then
-        PKG_MGR="pacman"; PKG_INSTALL="pacman -S --noconfirm"
-    fi
-    SUDO=""
-    if [[ "$(id -u)" != "0" ]] && has_cmd sudo; then SUDO="sudo"; fi
-}
-
-# Install the system libraries the chosen profile needs (best-effort, non-fatal).
-install_system_deps() {
-    detect_pkg_manager
-    if [[ -z "$PKG_MGR" ]]; then
-        warn "No known package manager (apt/dnf/pacman). Install system deps manually if needed:"
-        info "  ffmpeg (audio), libportaudio2 (mic, voice profile), WebKitGTK (desktop GUI)."
-        return
-    fi
-
-    # Map generic deps to per-distro package names.
-    local pkgs=()
-    case "$PKG_MGR" in
-        apt)
-            pkgs+=("ffmpeg")
-            [[ "$NEED_VOICE" == "true" ]] && pkgs+=("libportaudio2" "portaudio19-dev")
-            [[ "$NEED_GUI" == "true" ]] && pkgs+=("gir1.2-webkit2-4.1" "python3-gi" "gir1.2-gtk-3.0")
-            ;;
-        dnf)
-            pkgs+=("ffmpeg")
-            [[ "$NEED_VOICE" == "true" ]] && pkgs+=("portaudio" "portaudio-devel")
-            [[ "$NEED_GUI" == "true" ]] && pkgs+=("webkit2gtk4.1" "python3-gobject" "gtk3")
-            ;;
-        pacman)
-            pkgs+=("ffmpeg")
-            [[ "$NEED_VOICE" == "true" ]] && pkgs+=("portaudio")
-            [[ "$NEED_GUI" == "true" ]] && pkgs+=("webkit2gtk" "python-gobject" "gtk3")
-            ;;
-    esac
-
-    info "Installing system packages: ${pkgs[*]}"
-    if ! $SUDO $PKG_INSTALL "${pkgs[@]}"; then
-        warn "Some system packages failed to install. NovaAI may still work; install them manually if a feature is missing."
-    else
-        ok "System packages installed."
-    fi
-}
-
-# Ask HOW NovaAI should run — GUI window or browser/web. This single choice
-# drives the dependency set and the launcher that gets created:
-#
-#   GUI → base + voice + stream alerts + desktop GUI   (profile: full)
-#   Web → base + voice + stream alerts                 (profile: voice)
-#
-# Both modes always include requirements.txt + requirements-voice.txt +
-# requirements-streaming.txt; GUI additionally installs requirements-gui.txt.
-choose_run_mode() {
-    local default_hint="On a headless Pi / server (no screen), choose Web."
-    is_headless && default_hint="No display detected — Web mode is recommended."
-
-    info "$default_hint"
-    local choice
-    choice=$(ask_choice "How do you want to run NovaAI?" \
-        "GUI  — native desktop window (needs a screen + desktop environment)" \
-        "Web  — browser UI, reachable from any device (great for a Pi / server)")
-
-    case "$choice" in
-        1) RUN_MODE="gui"; INSTALL_PROFILE="full";  NEED_VOICE=true; NEED_GUI=true ;;
-        2) RUN_MODE="web"; INSTALL_PROFILE="voice"; NEED_VOICE=true; NEED_GUI=false ;;
-        *) RUN_MODE="web"; INSTALL_PROFILE="voice"; NEED_VOICE=true; NEED_GUI=false ;;
-    esac
-    if [[ "$NEED_GUI" == "true" ]]; then
-        ok "Run mode: GUI  (base + voice + stream alerts + desktop GUI)"
-    else
-        ok "Run mode: Web  (base + voice + stream alerts)"
-    fi
-}
-
 # ── Step 1: Python ───────────────────────────────────────────────────────────
 
 ensure_python() {
-    # Diagnostics go to stderr so the command name is the only thing on stdout
-    # (this function's stdout is captured via `python_cmd=$(ensure_python)`).
-    step "1/7" "Checking for Python ${PYTHON_MIN}+..." >&2
+    step "1/7" "Checking for Python ${PYTHON_MIN}+..."
 
-    # Prefer a Python the voice/ML stack ships wheels for (3.12 / 3.11 / 3.10)
-    # before a bare python3, so a box that ALSO has a brand-new 3.13/3.14 doesn't
-    # get picked — coqui-tts/numba/llvmlite/torch have no wheels there yet and pip
-    # would try (and fail) to build them from source.
     local python_cmd=""
-    for cmd in python3.12 python3.11 python3.10 python3 python; do
+    for cmd in python3 python; do
         if has_cmd "$cmd"; then
             local ver
             ver=$("$cmd" --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
             if [[ -n "$ver" ]] && version_ge "$ver" "$PYTHON_MIN"; then
                 python_cmd="$cmd"
-                ok "Found $cmd $ver" >&2
+                ok "Found $cmd $ver"
                 echo "$python_cmd"
                 return
             fi
         fi
     done
 
-    fail "Python ${PYTHON_MIN}+ not found." >&2
-    echo "" >&2
-    info "Install Python ${PYTHON_MIN}+ using your package manager:" >&2
-    info "  Ubuntu/Debian:  sudo apt install python3.12 python3.12-venv" >&2
-    info "  Fedora:         sudo dnf install python3.12" >&2
-    info "  Arch:           sudo pacman -S python" >&2
-    info "  macOS:          brew install python@3.12" >&2
-    echo "" >&2
+    fail "Python ${PYTHON_MIN}+ not found."
+    echo ""
+    info "Install Python ${PYTHON_MIN}+ using your package manager:"
+    info "  Ubuntu/Debian:  sudo apt install python3.11 python3.11-venv"
+    info "  Fedora:         sudo dnf install python3.11"
+    info "  Arch:           sudo pacman -S python"
+    info "  macOS:          brew install python@3.11"
+    echo ""
     exit 1
 }
 
@@ -428,10 +335,6 @@ run_setup() {
     echo ""
 
     local python_cmd="$1"
-
-    # System libraries the chosen profile needs (ffmpeg, PortAudio, WebKitGTK).
-    install_system_deps
-
     local env_file="$INSTALL_DIR/.env"
     if [[ ! -f "$env_file" && -f "$INSTALL_DIR/.env.example" ]]; then
         cp "$INSTALL_DIR/.env.example" "$env_file"
@@ -461,8 +364,7 @@ run_setup() {
         ok "LLM provider configured."
     fi
 
-    # Tell setup.py which dependency profile to install (minimal/voice/gui/full).
-    (cd "$INSTALL_DIR" && NOVA_INSTALL_PROFILE="${INSTALL_PROFILE:-full}" "$python_cmd" setup.py --setup)
+    (cd "$INSTALL_DIR" && "$python_cmd" setup.py --setup)
     ok "Setup complete."
 }
 
@@ -515,18 +417,6 @@ start_ollama_and_pull() {
 ask_gpu() {
     step "6/7" "GPU acceleration..."
 
-    # Torch is only installed with the voice/full profiles, so CUDA torch is
-    # irrelevant otherwise (and Raspberry Pi has no NVIDIA GPU at all).
-    if [[ "$NEED_VOICE" != "true" ]]; then
-        ok "Skipped (no voice/ML stack in this profile — nothing to accelerate)."
-        return
-    fi
-    local arch; arch="$(uname -m)"
-    if [[ "$arch" == "aarch64" || "$arch" == "arm"* ]]; then
-        ok "Skipped (ARM device — no CUDA GPU). Voice runs on CPU."
-        return
-    fi
-
     local choice
     choice=$(ask_choice "Do you have an NVIDIA GPU for faster voice synthesis?" \
         "Yes — install CUDA-accelerated PyTorch" \
@@ -574,78 +464,41 @@ ask_gpu() {
     fi
 }
 
-# ── Step 7: Launcher + desktop entry (both GUI and Web modes) ────────────────
+# ── Step 7: Desktop launcher ────────────────────────────────────────────────
 
-create_launchers() {
-    step "7/7" "Creating launcher (mode: ${RUN_MODE:-web})..."
+ask_launcher() {
+    step "7/7" "Desktop launcher..."
 
-    # Convenience script that always starts NovaAI in the chosen mode. The mode
-    # lives in .nova-run-mode so you can flip it later without re-installing.
-    local run_script="$INSTALL_DIR/run-nova.sh"
-    echo "--${RUN_MODE:-web}" > "$INSTALL_DIR/.nova-run-mode"
-    cat > "$run_script" <<RUNEOF
-#!/usr/bin/env bash
-# Auto-generated by install.sh — starts NovaAI in its configured mode.
-HERE="\$(cd "\$(dirname "\$(readlink -f "\$0" 2>/dev/null || echo "\$0")")" && pwd)"
-cd "\$HERE"
-MODE="\$(cat "\$HERE/.nova-run-mode" 2>/dev/null || echo --${RUN_MODE:-web})"
-PY="\$HERE/.venv/bin/python"
-[ -x "\$PY" ] || PY="python3"
-exec "\$PY" app.py \$MODE "\$@"
-RUNEOF
-    chmod +x "$run_script"
-    ok "Launcher script: $run_script  (mode: --${RUN_MODE:-web})"
+    if ask_yes_no "Create a desktop launcher for NovaAI?"; then
+        local desktop_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+        mkdir -p "$desktop_dir"
+        local launcher_path="$desktop_dir/novaai.desktop"
+        local icon_path="$INSTALL_DIR/data/logo.png"
 
-    # A .desktop menu/desktop shortcut only makes sense with a graphical desktop.
-    if is_headless; then
-        ok "No desktop detected — skipping menu shortcut. Start with: ./run-nova.sh"
-        return
-    fi
-    if ! ask_yes_no "Create a desktop / menu shortcut for NovaAI?"; then
-        ok "No shortcut created. Start with: ./run-nova.sh"
-        return
-    fi
-
-    local desktop_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    mkdir -p "$desktop_dir"
-    local launcher_path="$desktop_dir/novaai.desktop"
-    local icon_path="$INSTALL_DIR/data/logo.png"
-    [[ -f "$icon_path" ]] || icon_path="$INSTALL_DIR/novaai/static/favicon.png"
-
-    local exec_line term_line comment
-    if [[ "$RUN_MODE" == "gui" ]]; then
-        exec_line="$run_script"
-        term_line="false"
-        comment="Launch NovaAI desktop GUI"
-    else
-        # Web mode: start the server, then open the dashboard in the browser.
-        local port="${NOVA_WEB_PORT:-8800}"
-        exec_line="bash -c '\"$run_script\" & sleep 2; xdg-open http://127.0.0.1:$port >/dev/null 2>&1; wait'"
-        term_line="true"
-        comment="Start NovaAI web server and open the dashboard"
-    fi
-
-    cat > "$launcher_path" <<DESKTOP
+        cat > "$launcher_path" <<DESKTOP
 [Desktop Entry]
 Name=NovaAI
-Comment=$comment
-Exec=$exec_line
+Comment=AI Companion Studio
+Exec=$INSTALL_DIR/.venv/bin/python $INSTALL_DIR/app.py --gui
 Icon=$icon_path
-Terminal=$term_line
+Terminal=false
 Type=Application
-Categories=Utility;AudioVideo;
+Categories=Utility;
 DESKTOP
-    chmod +x "$launcher_path"
 
-    # Also drop a copy on the Desktop if there is one.
-    local user_desktop="$HOME/Desktop"
-    if [[ -d "$user_desktop" ]]; then
-        cp "$launcher_path" "$user_desktop/NovaAI.desktop"
-        chmod +x "$user_desktop/NovaAI.desktop"
+        chmod +x "$launcher_path"
+
+        # Also try to copy to Desktop if it exists
+        local user_desktop="$HOME/Desktop"
+        if [[ -d "$user_desktop" ]]; then
+            cp "$launcher_path" "$user_desktop/NovaAI.desktop"
+            chmod +x "$user_desktop/NovaAI.desktop"
+        fi
+
+        ok "Desktop launcher created."
+    else
+        ok "No launcher created."
     fi
-    command -v update-desktop-database >/dev/null 2>&1 && \
-        update-desktop-database "$desktop_dir" >/dev/null 2>&1 || true
-    ok "Desktop shortcut created (${RUN_MODE} mode)."
 }
 
 # ── Finish ───────────────────────────────────────────────────────────────────
@@ -674,17 +527,10 @@ show_finish() {
     fi
     echo -e "    ${DIM}LLM:${NC}          ${WHITE}$provider_label${NC}"
     echo ""
-    echo -e "    ${DIM}Run mode:${NC}     ${WHITE}${RUN_MODE:-web}${NC} ${DIM}(profile: ${INSTALL_PROFILE:-full})${NC}"
-    echo ""
     echo -e "    ${DIM}To launch NovaAI anytime:${NC}"
     echo ""
     echo -e "      ${CYAN}cd $INSTALL_DIR${NC}"
-    echo -e "      ${CYAN}./run-nova.sh${NC}          ${DIM}# starts in ${RUN_MODE:-web} mode${NC}"
-    if [[ "$RUN_MODE" == "web" ]]; then
-        echo -e "      ${DIM}then open the printed http://...:8800 URL in a browser${NC}"
-    fi
-    echo -e "      ${DIM}…or pick ${WHITE}NovaAI${NC}${DIM} from your application menu.${NC}"
-    echo -e "      ${DIM}Switch modes later: edit ${WHITE}.nova-run-mode${NC}${DIM} (--gui / --web).${NC}"
+    echo -e "      ${CYAN}python3 setup.py${NC}"
     echo ""
     echo -e "    ${DIM}Change LLM provider anytime by editing${NC} ${WHITE}.env${NC} ${DIM}in the install folder.${NC}"
     echo ""
@@ -701,9 +547,6 @@ main() {
 
     # Step 2: LLM provider
     choose_llm_provider
-
-    # Run mode (GUI vs Web) — drives deps, system libs, and the launcher.
-    choose_run_mode
 
     # Step 3: Ollama
     ensure_ollama
@@ -722,38 +565,19 @@ main() {
     # Step 6: GPU
     ask_gpu
 
-    # Step 7: Launcher + desktop shortcut (both modes)
-    create_launchers
+    # Step 7: Desktop launcher
+    ask_launcher
 
     show_finish
 
     if ask_yes_no "Launch NovaAI now?"; then
         echo ""
-        info "Starting NovaAI in ${RUN_MODE:-web} mode..."
+        info "Starting NovaAI..."
         local venv_python="$INSTALL_DIR/.venv/bin/python"
-        # GUI mode needs a display; fall back to web if somehow headless.
-        if [[ "$RUN_MODE" == "gui" ]] && ! is_headless; then
-            (cd "$INSTALL_DIR" && "$venv_python" app.py --gui)
-        else
-            (cd "$INSTALL_DIR" && "$venv_python" app.py --web)
-        fi
+        (cd "$INSTALL_DIR" && "$venv_python" app.py --gui)
     fi
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────
-
-# Mirror the Windows installer: if any step aborts (e.g. setup.py / pip fails
-# under `set -e`), point the user at the issue tracker instead of dying silently.
-on_error() {
-    local rc=$?
-    [[ $rc -eq 0 ]] && return
-    echo ""
-    fail "Installation failed (exit $rc). See the messages above for the real cause."
-    echo ""
-    info "If you need help, open an issue at:"
-    info "  $REPO_URL/issues"
-    echo ""
-}
-trap on_error EXIT
 
 main "$@"

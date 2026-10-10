@@ -5,7 +5,6 @@ import os
 import queue
 import re
 import threading
-import time
 import wave
 from io import BytesIO
 from dataclasses import dataclass
@@ -13,45 +12,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import sounddevice as sd
+import torch
+from TTS.api import TTS
 
-# sounddevice (PortAudio), torch and coqui-tts (TTS) are optional voice extras.
-# Guard them so this module imports text-only (CLI / headless web) on machines
-# without speakers or the heavy ML stack (e.g. a headless Raspberry Pi). The
-# functions that actually synthesize/play audio call the _require_* helpers.
-try:
-    import sounddevice as sd
-except (ImportError, OSError):  # OSError: PortAudio shared lib missing
-    sd = None  # type: ignore[assignment]
-try:
-    import torch
-except (ImportError, OSError) as exc:
-    torch = None  # type: ignore[assignment]
-    _torch_import_error: BaseException | None = exc
-else:
-    _torch_import_error = None
-try:
-    from TTS.api import TTS
-except (ImportError, OSError) as exc:
-    TTS = None  # type: ignore[assignment]
-    _tts_import_error: BaseException | None = exc
-else:
-    _tts_import_error = None
-
-from .audio_input import (
-    VOICE_EXTRAS_HINT,
-    _require_audio,
-    get_hostapi_names,
-    normalize_audio_device_name,
-)
-
-
-def _require_xtts() -> None:
-    """Raise a friendly error if the local XTTS stack (coqui-tts + torch) is absent."""
-    if TTS is None or torch is None:
-        import_error = _tts_import_error or _torch_import_error
-        if import_error is None:
-            raise RuntimeError(VOICE_EXTRAS_HINT)
-        raise RuntimeError(f"{VOICE_EXTRAS_HINT}\n\nImport error: {import_error}") from import_error
+from .audio_input import get_hostapi_names, normalize_audio_device_name
 from .config import Config
 from .models import SessionState
 from .paths import AUDIO_DIR, ROOT_DIR, XTTS_STREAM_END
@@ -82,14 +47,12 @@ def resolve_optional_path(path_value: str | None) -> Path | None:
 
 
 def get_xtts_device(config: Config) -> str:
-    if config.xtts_use_gpu and torch is not None and torch.cuda.is_available():
+    if config.xtts_use_gpu and torch.cuda.is_available():
         return "cuda"
     return "cpu"
 
 
 def get_default_output_device_index() -> int | None:
-    if sd is None:
-        return None
     default_device = sd.default.device
     if isinstance(default_device, (list, tuple)):
         if len(default_device) < 2:
@@ -228,8 +191,6 @@ def choose_compatible_output_device_index(
 
 
 def list_output_devices_compact(max_devices: int = 24) -> list[dict[str, Any]]:
-    if sd is None:
-        return []
     try:
         devices = sd.query_devices()
     except Exception as exc:
@@ -527,8 +488,7 @@ def resample_audio_for_output(
     return np.ascontiguousarray(resampled, dtype=np.float32)
 
 
-def ensure_xtts_model(config: Config, state: SessionState) -> "TTS":
-    _require_xtts()
+def ensure_xtts_model(config: Config, state: SessionState) -> TTS:
     desired_device = get_xtts_device(config)
     if state.xtts_model is None or state.xtts_device != desired_device:
         model = TTS(config.xtts_model_name, progress_bar=False)
@@ -842,25 +802,12 @@ def produce_xtts_stream_chunks(
         chunk_queue.put(XTTS_STREAM_END)
 
 
-def _emit_amplitude(on_amplitude: Any, audio_chunk: np.ndarray) -> None:
-    if on_amplitude is None or audio_chunk.size == 0:
-        return
-    try:
-        rms = float(np.sqrt(np.mean(np.square(audio_chunk, dtype=np.float64))))
-        # Normalize to a roughly 0..1 mouth-open value (speech RMS is small).
-        level = max(0.0, min(1.0, rms * 6.0))
-        on_amplitude(level)
-    except Exception:
-        pass
-
-
 def stream_xtts_audio(
     text: str,
     config: Config,
     state: SessionState,
     model: TTS,
     output_path: Path,
-    on_amplitude: Any = None,
 ) -> Path:
     sample_rate = get_xtts_output_sample_rate(model)
     playback_plan = choose_output_playback_plan(
@@ -923,7 +870,6 @@ def stream_xtts_audio(
                 audio_chunk = chunk_or_end
 
             audio_chunks.append(audio_chunk)
-            _emit_amplitude(on_amplitude, audio_chunk)
             playback_chunk = (
                 stream_resampler.process(audio_chunk)
                 if stream_resampler is not None
@@ -955,12 +901,7 @@ def stream_xtts_audio(
     return write_wav_audio(output_path, audio_chunks, sample_rate)
 
 
-def speak_text(
-    text: str,
-    config: Config,
-    state: SessionState,
-    on_amplitude: Any = None,
-) -> Path:
+def speak_text(text: str, config: Config, state: SessionState) -> Path:
     cleaned_text = trim_text_for_tts(text, config.xtts_max_text_chars)
 
     if config.tts_provider == "gtts":
@@ -971,9 +912,7 @@ def speak_text(
     model = ensure_xtts_model(config, state)
 
     if config.xtts_stream_output:
-        return stream_xtts_audio(
-            cleaned_text, config, state, model, output_path, on_amplitude=on_amplitude
-        )
+        return stream_xtts_audio(cleaned_text, config, state, model, output_path)
 
     return synthesize_xtts_to_file(cleaned_text, config, state, model, output_path)
 
@@ -987,7 +926,6 @@ def get_mci_error(error_code: int) -> str:
 def play_wav_with_sounddevice(
     audio_path: Path,
     output_device_index: int | None = None,
-    on_amplitude: Any = None,
 ) -> None:
     with wave.open(str(audio_path), "rb") as wav_file:
         channels = wav_file.getnchannels()
@@ -1022,14 +960,6 @@ def play_wav_with_sounddevice(
     )
 
     try:
-        if on_amplitude is not None:
-            _play_blocks_with_amplitude(
-                playback_audio,
-                playback_plan.sample_rate,
-                playback_plan.output_device_index,
-                on_amplitude,
-            )
-            return
         sd.play(
             playback_audio,
             samplerate=playback_plan.sample_rate,
@@ -1043,42 +973,6 @@ def play_wav_with_sounddevice(
             else f"speaker #{output_device_index}"
         )
         raise RuntimeError(f"Could not play audio on {selected}. {exc}") from exc
-
-
-def _play_blocks_with_amplitude(
-    audio: np.ndarray,
-    sample_rate: int,
-    output_device_index: int | None,
-    on_amplitude: Any,
-) -> None:
-    """Play audio in blocks, emitting an RMS amplitude per block for lip-sync."""
-    data = np.ascontiguousarray(audio, dtype=np.float32)
-    if data.ndim == 1:
-        data = data.reshape(-1, 1)
-    channels = data.shape[1]
-    block = max(256, int(sample_rate * 0.05))  # ~50ms frames
-    stream = sd.OutputStream(
-        samplerate=sample_rate,
-        channels=channels,
-        dtype="float32",
-        device=output_device_index,
-    )
-    stream.start()
-    try:
-        for start in range(0, data.shape[0], block):
-            frame = data[start : start + block]
-            _emit_amplitude(on_amplitude, frame.reshape(-1))
-            stream.write(frame)
-    finally:
-        try:
-            stream.stop()
-        except Exception:
-            pass
-        stream.close()
-        try:
-            on_amplitude(0.0)
-        except Exception:
-            pass
 
 
 def _play_with_mci(audio_path: Path) -> None:
@@ -1125,99 +1019,15 @@ def _play_with_ffplay(audio_path: Path) -> None:
     )
 
 
-def _decode_audio_mono(audio_path: Path) -> tuple[np.ndarray | None, int]:
-    """Decode an audio file to mono float32 samples + sample rate.
-
-    WAV is read directly; other formats (e.g. gTTS .mp3) go through ffmpeg, which
-    is already present whenever ffplay is used for fallback playback.
-    """
-    suffix = audio_path.suffix.lower()
-    if suffix == ".wav":
-        try:
-            with wave.open(str(audio_path), "rb") as wav_file:
-                channels = wav_file.getnchannels()
-                sample_rate = wav_file.getframerate()
-                frames = wav_file.readframes(wav_file.getnframes())
-            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-            if channels > 1:
-                audio = audio.reshape(-1, channels).mean(axis=1)
-            return audio, sample_rate
-        except Exception:
-            return None, 0
-    import shutil as _shutil
-    import subprocess as _subprocess
-
-    ffmpeg = _shutil.which("ffmpeg")
-    if not ffmpeg:
-        return None, 0
-    try:
-        out = _subprocess.run(
-            [ffmpeg, "-v", "quiet", "-i", str(audio_path),
-             "-f", "s16le", "-ac", "1", "-ar", "22050", "-"],
-            capture_output=True, check=True,
-        ).stdout
-        if not out:
-            return None, 0
-        return np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0, 22050
-    except Exception:
-        return None, 0
-
-
-def _emit_amplitude_envelope(audio_path: Path, on_amplitude: Any) -> None:
-    """Decode the file and emit its RMS envelope on a wall clock (~25 fps).
-
-    Drives lip-sync when the actual playback happens in an external player
-    (ffplay/MCI) that can't report amplitude itself. Runs in its own thread,
-    started at the same time as playback so the envelope tracks the audio.
-    """
-    if on_amplitude is None:
-        return
-    samples, sample_rate = _decode_audio_mono(audio_path)
-    if samples is None or samples.size == 0:
-        return
-    hop = max(1, int(sample_rate * 0.04))  # 40 ms ≈ 25 fps
-    nblocks = max(1, samples.size // hop)
-    start = time.monotonic()
-    try:
-        for i in range(nblocks):
-            wait = start + i * 0.04 - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-            block = samples[i * hop:(i + 1) * hop]
-            if block.size == 0:
-                continue
-            rms = float(np.sqrt(np.mean(np.square(block, dtype=np.float64))))
-            on_amplitude(max(0.0, min(1.0, rms * 6.0)))
-        on_amplitude(0.0)
-    except Exception:
-        pass
-
-
 def play_audio_file(
     audio_path: Path,
     output_device_index: int | None = None,
-    on_amplitude: Any = None,
 ) -> None:
-    if audio_path.suffix.lower() == ".wav" and sd is not None:
-        play_wav_with_sounddevice(audio_path, output_device_index, on_amplitude)
+    if audio_path.suffix.lower() == ".wav":
+        play_wav_with_sounddevice(audio_path, output_device_index)
         return
 
-    # No sounddevice/PortAudio (minimal install), or a non-WAV file (e.g. gTTS
-    # .mp3): fall back to a system player. Those players can't report amplitude,
-    # so drive lip-sync from a decoded RMS envelope on a parallel thread.
-    envelope_thread: threading.Thread | None = None
-    if on_amplitude is not None:
-        envelope_thread = threading.Thread(
-            target=_emit_amplitude_envelope,
-            args=(audio_path, on_amplitude),
-            daemon=True,
-        )
-        envelope_thread.start()
-    try:
-        if os.name == "nt":
-            _play_with_mci(audio_path)
-        else:
-            _play_with_ffplay(audio_path)
-    finally:
-        if envelope_thread is not None:
-            envelope_thread.join(timeout=0.1)
+    if os.name == "nt":
+        _play_with_mci(audio_path)
+    else:
+        _play_with_ffplay(audio_path)

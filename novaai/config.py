@@ -53,19 +53,6 @@ def normalize_stt_provider(value: str) -> str:
 def normalize_llm_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {
-        "claude",
-        "claude-code",
-        "claudecode",
-        "claude-cli",
-        "claude_code",
-        "anthropic-cli",
-    }:
-        return "claude-code"
-    if normalized in {"codex", "codex-cli", "codex_cli", "openai-codex"}:
-        return "codex"
-    if normalized in {"cli", "custom-cli", "command", "shell"}:
-        return "cli"
-    if normalized in {
         "openai",
         "chatgpt",
         "openai-compatible",
@@ -81,22 +68,6 @@ def normalize_llm_provider(value: str) -> str:
     }:
         return "openai"
     return "ollama"
-
-
-def resolve_model_label(
-    provider: str,
-    explicit_model: str | None,
-    ollama_default: str,
-    cli_model: str | None,
-) -> str:
-    if provider in {"claude-code", "codex", "cli"}:
-        defaults = {
-            "claude-code": "Claude Code (CLI)",
-            "codex": "Codex (CLI)",
-            "cli": "Custom CLI",
-        }
-        return cli_model or defaults.get(provider, provider)
-    return explicit_model or ollama_default
 
 
 def normalize_web_safesearch(value: str) -> str:
@@ -149,99 +120,11 @@ def normalize_music_provider(value: str) -> str:
     return "soundcloud"
 
 
-def _normalize_singing_backend(value: str) -> str:
-    v = (value or "").strip().lower()
-    if v in {"local", "xtts", "gtts"}:
-        return "local"
-    if v == "rvc":
-        return "rvc"
-    return "cloud"
-
-
 def normalize_tts_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"gtts", "google-tts", "google_tts", "google"}:
         return "gtts"
     return "xtts"
-
-
-def normalize_audio_output(value: str | None) -> str:
-    """Where NovaAI's audio (voice, singing, music) plays: the server 'speaker',
-    the 'browser' (avatar overlay), or 'both'."""
-    normalized = (value or "").strip().lower()
-    if normalized in {"browser", "avatar", "web", "client"}:
-        return "browser"
-    if normalized in {"both", "all"}:
-        return "both"
-    return "speaker"
-
-
-def normalize_twitch_reply_mode(value: str) -> str:
-    normalized = value.strip().lower()
-    if normalized in {"all", "everything", "every"}:
-        return "all"
-    if normalized in {"command", "commands", "!ask", "cmd"}:
-        return "command"
-    return "mention"
-
-
-def normalize_twitch_allowed_roles(value: str | None) -> str:
-    """Who NovaAI is allowed to reply to in Twitch chat.
-
-    everyone     -> anyone
-    subscribers  -> subscribers, VIPs, mods, and the broadcaster
-    moderators   -> mods and the broadcaster only
-    """
-    normalized = (value or "").strip().lower()
-    if normalized in {"subscribers", "subscriber", "subs", "sub", "subsonly", "subs_only"}:
-        return "subscribers"
-    if normalized in {"moderators", "moderator", "mods", "mod", "modsonly", "mods_only"}:
-        return "moderators"
-    return "everyone"
-
-
-def normalize_streamlabs_platforms(value: str | None) -> str:
-    """Which platforms Streamlabs alerts are accepted from.
-
-    Streamlabs forwards events for EVERY platform linked to the account
-    (Twitch, YouTube, Facebook, Kick, Trovo, and donations themselves). Set a
-    comma-separated allow-list to only react to some of them; blank = all.
-
-    Aliases are folded to canonical names so 'YT'/'youtube_account' both map to
-    'youtube'. The special 'streamlabs' platform is donations (the tip jar).
-    """
-    raw = (value or "").strip().lower()
-    if not raw:
-        return ""
-    alias = {
-        "twitch": "twitch", "twitch_account": "twitch", "ttv": "twitch",
-        "youtube": "youtube", "youtube_account": "youtube", "yt": "youtube",
-        "facebook": "facebook", "facebook_account": "facebook", "fb": "facebook",
-        "kick": "kick", "kick_account": "kick",
-        "trovo": "trovo", "trovo_account": "trovo",
-        "streamlabs": "streamlabs", "tips": "streamlabs", "donations": "streamlabs",
-    }
-    out: list[str] = []
-    for part in raw.replace(";", ",").split(","):
-        name = alias.get(part.strip(), part.strip())
-        if name and name not in out:
-            out.append(name)
-    return ",".join(out)
-
-
-def normalize_rag_embedding_provider(value: str) -> str:
-    normalized = value.strip().lower()
-    if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
-        return "ollama"
-    if normalized in {"openai", "openai-compatible", "api", "remote"}:
-        return "openai"
-    return "local"
-
-
-def normalize_twitch_channel(value: str | None) -> str:
-    if not value:
-        return ""
-    return value.strip().lstrip("#").lower()
 
 
 def resolve_llm_api_url(provider: str, raw_url: str | None) -> str:
@@ -311,13 +194,7 @@ class Config:
     llm_api_key: str | None
     llm_keep_alive: str
     llm_num_predict: int
-    llm_num_ctx: int
-    llm_cli_command: str | None
-    claude_cli_path: str | None
-    codex_cli_path: str | None
-    cli_model: str | None
     tts_provider: str
-    audio_output: str
     tts_language: str
     xtts_model_name: str
     xtts_speaker: str
@@ -364,59 +241,6 @@ class Config:
     speaker_device_index: int | None
     mic_sample_rate: int | None
     mic_chunk_size: int
-    # Twitch
-    twitch_enabled: bool
-    twitch_channel: str
-    twitch_bot_username: str
-    twitch_oauth_token: str | None
-    twitch_reply_mode: str
-    twitch_allowed_roles: str
-    twitch_reply_cooldown_seconds: float
-    streamlabs_socket_token: str | None
-    streamelements_jwt_token: str | None
-    streamlabs_platforms: str
-    # RAG memory
-    rag_enabled: bool
-    rag_embedding_provider: str
-    rag_embedding_model: str
-    rag_top_k: int
-    rag_min_score: float
-    # Game playing
-    game_enabled: bool
-    game_driver: str
-    game_tick_seconds: float
-    mc_host: str
-    mc_port: int
-    mc_username: str
-    mc_auth: str
-    mc_bridge_port: int
-    mc_viewer_port: int
-    mc_inventory_port: int
-    mc_viewer_first_person: bool
-    mc_viewer_version: str | None
-    node_path: str | None
-    owner_name: str
-    mc_owner_username: str
-    mc_help_whitelist: tuple[str, ...]
-    mc_home: str | None
-    mc_profiles_folder: str | None
-    mc_version: str | None
-    # Singing
-    singing_enabled: bool
-    singing_backend: str
-    singing_fetch_instrumental: bool
-    rvc_model_path: str | None
-    singing_api_url: str | None
-    singing_api_key: str | None
-    # Vision (for the universal game driver) + extra game drivers
-    vision_model: str | None
-    osu_allow_online: bool
-    factorio_rcon_host: str
-    factorio_rcon_port: int
-    factorio_rcon_password: str | None
-    vrchat_osc_host: str
-    vrchat_osc_port: int
-    game_universal_name: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -468,17 +292,6 @@ class Config:
             performance_profile.ollama_num_predict
             if performance_profile is not None
             else max(48, int(os.getenv("OLLAMA_NUM_PREDICT", "1200")))
-        )
-        # Context window sent to Ollama. 0 = leave it to Ollama's default.
-        # Set this (e.g. 4096) when a backend GPU is small: long-context models
-        # like dolphin3/llama3.2 advertise a 128K window, and Ollama sizes its
-        # memory estimate for the *full* window, which makes it refuse to load
-        # on modest GPUs ("requires NN GiB"). Capping num_ctx fixes that.
-        llm_num_ctx = max(
-            0,
-            int(
-                os.getenv("OLLAMA_NUM_CTX", os.getenv("LLM_NUM_CTX", "0"))
-            ),
         )
         xtts_stream_chunk_size = (
             performance_profile.xtts_stream_chunk_size
@@ -532,22 +345,15 @@ class Config:
         llm_provider = normalize_llm_provider(
             os.getenv("LLM_PROVIDER", os.getenv("CHAT_PROVIDER", "ollama"))
         )
-        # Pick the right base URL per provider. For Ollama, prefer the local
-        # OLLAMA_API_URL so a generic LLM_API_URL (often an OpenAI-compatible proxy
-        # like LiteLLM) doesn't hijack local Ollama and cause gateway timeouts.
-        if llm_provider == "ollama":
-            raw_llm_url = (
-                parse_optional_str_env("OLLAMA_API_URL")
-                or parse_optional_str_env("LLM_API_URL")
-            )
-        elif llm_provider == "openai":
-            raw_llm_url = (
-                parse_optional_str_env("LLM_API_URL")
-                or parse_optional_str_env("OPENAI_API_URL")
-            )
-        else:
-            raw_llm_url = None  # CLI providers don't use an HTTP URL
-        llm_api_url = resolve_llm_api_url(llm_provider, raw_llm_url)
+        llm_api_url = resolve_llm_api_url(
+            llm_provider,
+            parse_optional_str_env("LLM_API_URL")
+            or (
+                parse_optional_str_env("OPENAI_API_URL")
+                if llm_provider == "openai"
+                else parse_optional_str_env("OLLAMA_API_URL")
+            ),
+        )
         web_search_provider = normalize_web_search_provider(
             os.getenv("WEB_SEARCH_PROVIDER", "searxng")
         )
@@ -583,11 +389,10 @@ class Config:
             ),
             system_summary=describe_system_capabilities(capabilities),
             llm_provider=llm_provider,
-            model=resolve_model_label(
-                llm_provider,
-                parse_optional_str_env("LLM_MODEL") or parse_optional_str_env("OPENAI_MODEL"),
-                os.getenv("OLLAMA_MODEL", "dolphin3"),
-                parse_optional_str_env("LLM_CLI_MODEL"),
+            model=(
+                parse_optional_str_env("LLM_MODEL")
+                or parse_optional_str_env("OPENAI_MODEL")
+                or os.getenv("OLLAMA_MODEL", "dolphin3")
             ),
             llm_api_url=llm_api_url,
             llm_api_key=(
@@ -599,15 +404,7 @@ class Config:
                 or os.getenv("OLLAMA_KEEP_ALIVE", "30m")
             ),
             llm_num_predict=llm_num_predict,
-            llm_num_ctx=llm_num_ctx,
-            llm_cli_command=parse_optional_str_env("LLM_CLI_COMMAND"),
-            claude_cli_path=parse_optional_str_env("CLAUDE_CLI_PATH"),
-            codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),
-            cli_model=parse_optional_str_env("LLM_CLI_MODEL"),
             tts_provider=tts_provider,
-            audio_output=normalize_audio_output(
-                os.getenv("AUDIO_OUTPUT", os.getenv("TTS_OUTPUT", "speaker"))
-            ),
             tts_language=os.getenv("XTTS_LANGUAGE")
             or os.getenv("TTS_LANG")
             or os.getenv("STT_LANGUAGE", "en"),
@@ -690,74 +487,4 @@ class Config:
             speaker_device_index=parse_optional_int_env("SPEAKER_DEVICE_INDEX"),
             mic_sample_rate=parse_optional_int_env("MIC_SAMPLE_RATE"),
             mic_chunk_size=mic_chunk_size,
-            twitch_enabled=parse_bool_env("TWITCH_ENABLED", False),
-            twitch_channel=normalize_twitch_channel(os.getenv("TWITCH_CHANNEL")),
-            twitch_bot_username=(
-                parse_optional_str_env("TWITCH_BOT_USERNAME") or ""
-            ).lower(),
-            twitch_oauth_token=parse_optional_str_env("TWITCH_OAUTH_TOKEN"),
-            twitch_reply_mode=normalize_twitch_reply_mode(
-                os.getenv("TWITCH_REPLY_MODE", "mention")
-            ),
-            twitch_allowed_roles=normalize_twitch_allowed_roles(
-                os.getenv("TWITCH_ALLOWED_ROLES", "everyone")
-            ),
-            twitch_reply_cooldown_seconds=max(
-                0.0, float(os.getenv("TWITCH_REPLY_COOLDOWN", "8"))
-            ),
-            streamlabs_socket_token=parse_optional_str_env("STREAMLABS_SOCKET_TOKEN"),
-            streamelements_jwt_token=parse_optional_str_env("STREAMELEMENTS_JWT_TOKEN"),
-            streamlabs_platforms=normalize_streamlabs_platforms(
-                os.getenv("STREAMLABS_PLATFORMS", "")
-            ),
-            rag_enabled=parse_bool_env("RAG_ENABLED", True),
-            rag_embedding_provider=normalize_rag_embedding_provider(
-                os.getenv("RAG_EMBEDDING_PROVIDER", "local")
-            ),
-            rag_embedding_model=os.getenv(
-                "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
-            ),
-            rag_top_k=max(1, min(12, int(os.getenv("RAG_TOP_K", "4")))),
-            rag_min_score=float(os.getenv("RAG_MIN_SCORE", "0.25")),
-            game_enabled=parse_bool_env("GAME_ENABLED", False),
-            game_driver=os.getenv("GAME_DRIVER", "minecraft").strip().lower() or "minecraft",
-            game_tick_seconds=max(1.0, float(os.getenv("GAME_TICK_SECONDS", "4"))),
-            mc_host=os.getenv("MC_HOST", "127.0.0.1").strip() or "127.0.0.1",
-            mc_port=int(os.getenv("MC_PORT", "25565")),
-            mc_username=os.getenv("MC_USERNAME", "NovaAI").strip() or "NovaAI",
-            mc_auth=os.getenv("MC_AUTH", "offline").strip().lower() or "offline",
-            mc_bridge_port=int(os.getenv("MC_BRIDGE_PORT", "8767")),
-            mc_viewer_port=int(os.getenv("MC_VIEWER_PORT", "8768")),
-            mc_inventory_port=int(os.getenv("MC_INVENTORY_PORT", "8769")),
-            mc_viewer_first_person=parse_bool_env("MC_VIEWER_FIRST_PERSON", False),
-            mc_viewer_version=parse_optional_str_env("MC_VIEWER_VERSION"),
-            node_path=parse_optional_str_env("NODE_PATH"),
-            owner_name=(parse_optional_str_env("OWNER_NAME") or ""),
-            mc_owner_username=(
-                parse_optional_str_env("MC_OWNER_USERNAME")
-                or parse_optional_str_env("OWNER_NAME")
-                or ""
-            ),
-            mc_help_whitelist=tuple(
-                name.strip()
-                for name in (os.getenv("MC_HELP_WHITELIST", "") or "").split(",")
-                if name.strip()
-            ),
-            mc_home=parse_optional_str_env("MC_HOME"),
-            mc_profiles_folder=parse_optional_str_env("MC_PROFILES_FOLDER"),
-            mc_version=parse_optional_str_env("MC_VERSION"),
-            singing_enabled=parse_bool_env("SINGING_ENABLED", False),
-            singing_backend=_normalize_singing_backend(os.getenv("SINGING_BACKEND", "local")),
-            singing_fetch_instrumental=parse_bool_env("SINGING_FETCH_INSTRUMENTAL", True),
-            rvc_model_path=parse_optional_str_env("RVC_MODEL_PATH"),
-            singing_api_url=parse_optional_str_env("SINGING_API_URL"),
-            singing_api_key=parse_optional_str_env("SINGING_API_KEY"),
-            vision_model=parse_optional_str_env("VISION_MODEL"),
-            osu_allow_online=parse_bool_env("OSU_ALLOW_ONLINE", False),
-            factorio_rcon_host=os.getenv("FACTORIO_RCON_HOST", "127.0.0.1").strip() or "127.0.0.1",
-            factorio_rcon_port=int(os.getenv("FACTORIO_RCON_PORT", "27015")),
-            factorio_rcon_password=parse_optional_str_env("FACTORIO_RCON_PASSWORD"),
-            vrchat_osc_host=os.getenv("VRCHAT_OSC_HOST", "127.0.0.1").strip() or "127.0.0.1",
-            vrchat_osc_port=int(os.getenv("VRCHAT_OSC_PORT", "9000")),
-            game_universal_name=os.getenv("GAME_UNIVERSAL_NAME", "a PC game").strip() or "a PC game",
         )
