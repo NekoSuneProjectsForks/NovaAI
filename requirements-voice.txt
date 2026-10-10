@@ -2,7 +2,7 @@
 # NovaAI — VOICE / ML extras (optional).
 #
 # Install on top of the base requirements when you want speech input, spoken
-# replies, local memory embeddings, or singing:
+# replies or local memory embeddings:
 #   pip install -r requirements.txt -r requirements-voice.txt
 #
 # Heads-up for Raspberry Pi / ARM: torch + coqui-tts are large and XTTS voice
@@ -30,11 +30,3 @@ transformers>=4.40,<5
 
 # Local memory embeddings (lazy-imported by novaai/memory.py)
 sentence-transformers>=2.7,<3.3
-
-# Singing extras: download/merge instrumental backing tracks with the AI voice.
-#   yt-dlp         - downloads the backing track (or your pasted YouTube URL)
-#   imageio-ffmpeg - bundles an ffmpeg binary so NovaAI can DECODE + MERGE the
-#                    backing with the voice. (A system ffmpeg on PATH, or
-#                    FFMPEG_PATH=..., works too.)
-yt-dlp>=2024.1
-imageio-ffmpeg>=0.4
