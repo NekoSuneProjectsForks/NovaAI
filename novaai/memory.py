@@ -1,7 +1,7 @@
 """NovaAI - persistent RAG memory store.
 
 Gives NovaAI a long-term memory it recalls and learns from over time, without
-fine-tuning. Each interaction (chat, Twitch, game) can be remembered; relevant
+fine-tuning. Chat interactions can be remembered; relevant
 memories are recalled by semantic similarity and injected into the prompt as
 extra system context. User feedback reinforces or prunes memories.
 
