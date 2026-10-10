@@ -2524,7 +2524,6 @@ class NovaAIGui:
         self._append_system_message(message)
         if self.state.voice_enabled:
             speak_text(message, self.config, self.state)
-        # self.avatar_bridge.publish_reminder(reminder)
 
     def _trigger_alarm(self, alarm: dict[str, object]) -> None:
         message = f"Alarm: {alarm.get('label', 'Alarm')}"
