@@ -628,7 +628,7 @@ class Api:
             return {"ok": False, "msg": str(exc)}
 
     def _speak(self, text: str, emotion: str = "neutral") -> None:
-        """Play speech without custom avatar integration."""
+        """Play speech through the configured text-to-speech backend."""
         try:
             audio_path = speak_text(text, self.config, self.state)
             if should_play_audio_after_synthesis(self.config) and not self._stopped():
