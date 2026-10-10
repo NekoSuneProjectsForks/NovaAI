@@ -2,7 +2,7 @@
 
 This branch is dedicated to removing fork-specific feature additions while retaining reusable stability, security, installation, and compatibility fixes.
 
-> **Cleanup in progress.** The source still contains custom features until their code and dependencies have been removed and validated. Do not assume that VRM/MMD, singing, streaming overlays, autonomous games, or Neuro-style integrations have already been removed.
+> **Cleanup in progress.** The identified VRM/MMD, singing, streaming overlay, and game integrations have been removed from the principal application modules. This branch has not passed startup or regression testing, and the commit history still needs a full fixes-versus-features audit.
 
 ## Intended scope
 
@@ -15,15 +15,15 @@ Preserve independent fixes where still applicable, including XTTS/torchaudio nat
 - [x] Dedicated cleanup branch created from `main`.
 - [x] README replaced with an accurate cleanup status instead of advertising features slated for removal.
 - [ ] Audit source and history across branches.
-- [ ] Remove feature implementations and integrations.
+- [x] Remove identified avatar, MMD, singing, streaming and autonomous-game implementations and integrations.
 - [ ] Keep or transplant reusable fixes.
-- [ ] Remove obsolete dependencies and configuration.
+- [x] Remove identified feature-only dependencies, settings and installer hooks.
 - [ ] Run startup, import, installation, and regression tests.
 - [ ] Open a draft pull request for review; **do not merge**.
 
 ## Running and testing
 
-Until the cleanup is complete, refer to the code and install scripts in this branch for the actual supported options. Do not deploy this branch as a feature-free release.
+Do not deploy this branch until syntax, import, startup and regression tests pass. The maintenance branch is deliberately unmerged.
 
 ## Upstream and license
 
