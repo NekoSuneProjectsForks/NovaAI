@@ -22,7 +22,8 @@ DEFAULT_GITHUB_REPO = "cachenetworks/NovaAI"
 DEFAULT_GITHUB_BRANCH = "main"
 DEFAULT_UPDATE_CACHE_SECONDS = 21600
 DEFAULT_AUTO_UPDATE_CHECK = True
-DEFAULT_AUTO_UPDATE_INSTALL = True
+# Security-first: installing downloaded application code requires explicit opt-in.
+DEFAULT_AUTO_UPDATE_INSTALL = False
 GITHUB_REQUEST_HEADERS = {"User-Agent": "NovaAI-Updater"}
 
 UPDATE_EXCLUDED_TOP_LEVEL = {
