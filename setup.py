@@ -31,7 +31,6 @@ AUDIO_DIR = ROOT_DIR / "audio"
 REQUIREMENTS = ROOT_DIR / "requirements.txt"
 VOICE_REQUIREMENTS = ROOT_DIR / "requirements-voice.txt"
 GUI_REQUIREMENTS = ROOT_DIR / "requirements-gui.txt"
-STREAMING_REQUIREMENTS = ROOT_DIR / "requirements-streaming.txt"
 DEFAULT_OLLAMA_MODEL = "dolphin3"
 DEFAULT_OLLAMA_API_URL = "http://127.0.0.1:11434/api/chat"
 OPENAI_COMPATIBLE_PROVIDERS = {
@@ -165,16 +164,12 @@ def install_requirements() -> None:
         req_files.append(VOICE_REQUIREMENTS)
     if profile in {"gui", "full"} and GUI_REQUIREMENTS.exists():
         req_files.append(GUI_REQUIREMENTS)
-    # Live Streamlabs/StreamElements alerts need the Socket.IO / WebSocket
-    # clients — install them for every profile except the bare-minimum one.
-    if profile != "minimal" and STREAMING_REQUIREMENTS.exists():
-        req_files.append(STREAMING_REQUIREMENTS)
 
     labels = {
         "minimal": "base (text + web UI)",
-        "voice": "base + voice/ML + stream alerts",
-        "gui": "base + desktop GUI + stream alerts",
-        "full": "everything (voice + desktop GUI + stream alerts)",
+        "voice": "base + voice/ML",
+        "gui": "base + desktop GUI",
+        "full": "everything (voice + desktop GUI)",
     }
     print(f"    Installing packages [{labels[profile]}]...")
     cmd = [str(VENV_PYTHON), "-m", "pip", "install"]
@@ -182,34 +177,6 @@ def install_requirements() -> None:
         cmd += ["-r", str(req)]
     cmd.append("-q")
     run(cmd)
-
-
-# ── Game bridge (optional) ─────────────────────────────────────────────────────
-
-def setup_minecraft_bridge() -> None:
-    """Install Node deps for the Minecraft bridge if Node is available.
-
-    Non-fatal: prints guidance and returns if Node is missing so users who
-    don't want the game feature aren't forced to install Node.js.
-    """
-    bridge_dir = ROOT_DIR / "node" / "minecraft-bridge"
-    if not (bridge_dir / "package.json").exists():
-        print("    Minecraft bridge files not found - skipping.")
-        return
-    node = shutil.which("node")
-    npm = shutil.which("npm")
-    if not node or not npm:
-        print("    Node.js / npm not found - skipping game bridge install.")
-        print("    Install Node 18+ from https://nodejs.org to enable game playing,")
-        print(f"    then run: npm install (inside {bridge_dir})")
-        return
-    print(f"    Found Node: {node}")
-    try:
-        run([npm, "install"], cwd=str(bridge_dir))
-        print("    Minecraft bridge dependencies installed.")
-    except Exception as exc:
-        print(f"    Warning: npm install failed - {exc}")
-        print(f"    You can retry later with: npm install (inside {bridge_dir})")
 
 
 # ── Project files ────────────────────────────────────────────────────────────
@@ -417,16 +384,7 @@ def full_setup() -> None:
     else:
         step(7, total, "Skipping voice model preload (text/web-only install).")
 
-    step(8, total, "Checking game bridge (Minecraft)...")
-    game_enabled = parse_bool_value(env_values.get("GAME_ENABLED") or "false")
-    if game_enabled:
-        try:
-            setup_minecraft_bridge()
-        except Exception as exc:
-            print(f"    Warning: game bridge setup failed — {exc}")
-    else:
-        print("    GAME_ENABLED is false - skipping (enable later in .env).")
-
+    step(8, total, "Finalizing setup...")
     step(9, total, "Writing setup marker...")
     SETUP_MARKER.write_text(
         (
