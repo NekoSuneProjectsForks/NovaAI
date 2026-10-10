@@ -1,12 +1,9 @@
 """NovaAI - shared response-generation engine.
 
-A single place that turns an input (from chat, Twitch, or a game agent) into a
-reply, regardless of source. It orchestrates the LLM call in ``chat.py`` plus
-lightweight emotion/danger tagging used to drive the avatar.
+Shared chat response generation with lightweight emotion and safety tagging.
 
 It deliberately performs **no** side effects: it does not append history, push
-to the frontend, or speak. Callers own those concerns so each source (chat,
-stream, game) can react differently.
+to the frontend, or speak. Callers own those concerns.
 """
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ class GenerationRequest:
     user_text: str
     profile: dict[str, Any]
     config: Config
-    source: str = "chat"  # "chat" | "twitch" | "game"
+    source: str = "chat"
     web_context: str | None = None
     extra_system: list[str] = field(default_factory=list)
     use_shared_history: bool = True
@@ -62,7 +59,7 @@ _DANGER_WORDS = (
 
 
 def detect_emotion(text: str) -> str:
-    """Keyword-based emotion tag matching the avatar's expression set."""
+    """Keyword-based emotion tag for optional response metadata."""
     normalized = str(text or "").lower()
     # Order matters: more specific/feminine cues first, then the broad buckets,
     # and angry before sad so "angry" isn't absorbed by sad.
