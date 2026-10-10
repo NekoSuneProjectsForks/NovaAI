@@ -101,71 +101,6 @@ _window: "webview.Window | None" = None
 # Api._js() relays code here instead of to a pywebview window. See _js().
 _emit_js: "Callable[[str], None] | None" = None
 
-# Per-driver game settings shown in the Game panel (instead of editing .env).
-# Each field maps to a Config attribute; values are persisted to app_state.
-GAME_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
-    "minecraft": {
-        "label": "Minecraft (Mineflayer + Node)",
-        "preview": True,
-        "fields": [
-            {"key": "mc_host", "label": "Server host", "type": "text"},
-            {"key": "mc_port", "label": "Server port", "type": "int"},
-            {"key": "mc_username", "label": "Bot username / MS email", "type": "text"},
-            {"key": "mc_auth", "label": "Auth mode", "type": "select", "options": ["offline", "microsoft"]},
-            {"key": "mc_owner_username", "label": "Owner username", "type": "text"},
-            {"key": "mc_help_whitelist", "label": "Help whitelist (comma-separated)", "type": "list"},
-            {"key": "mc_version", "label": "MC version (blank = auto)", "type": "text"},
-            {"key": "mc_home", "label": "Home x,y,z (optional)", "type": "text"},
-            {"key": "mc_bridge_port", "label": "Bridge port", "type": "int"},
-            {"key": "mc_viewer_port", "label": "Live-view port", "type": "int"},
-            {"key": "mc_viewer_first_person", "label": "First-person view", "type": "bool"},
-            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
-        ],
-    },
-    "universal": {
-        "label": "Universal (vision + keyboard)",
-        "preview": False,
-        "fields": [
-            {"key": "game_universal_name", "label": "Game name (e.g. Unturned, Terraria)", "type": "text"},
-            {"key": "vision_model", "label": "Vision model (Ollama, e.g. moondream)", "type": "text"},
-            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
-        ],
-    },
-    "vrchat": {
-        "label": "VRChat (OSC)",
-        "preview": False,
-        "fields": [
-            {"key": "vrchat_osc_host", "label": "OSC host", "type": "text"},
-            {"key": "vrchat_osc_port", "label": "OSC port", "type": "int"},
-            {"key": "vision_model", "label": "Vision model (optional)", "type": "text"},
-            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
-        ],
-    },
-    "factorio": {
-        "label": "Factorio (RCON)",
-        "preview": False,
-        "fields": [
-            {"key": "factorio_rcon_host", "label": "RCON host", "type": "text"},
-            {"key": "factorio_rcon_port", "label": "RCON port", "type": "int"},
-            {"key": "factorio_rcon_password", "label": "RCON password", "type": "password"},
-            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
-        ],
-    },
-    "osu": {
-        "label": "osu! (offline / solo only)",
-        "preview": False,
-        "fields": [
-            {"key": "osu_allow_online", "label": "Allow online (BANNABLE — at your own risk)", "type": "bool"},
-            {"key": "vision_model", "label": "Vision model (Ollama)", "type": "text"},
-            {"key": "game_tick_seconds", "label": "Think interval (sec)", "type": "float"},
-        ],
-    },
-}
-_GAME_FIELD_TYPES: dict[str, str] = {
-    f["key"]: f["type"] for meta in GAME_SETTINGS_SCHEMA.values() for f in meta["fields"]
-}
-
-
 # General app settings shown in the Settings panel (override .env, persisted).
 # "model" fields render with an auto-detected dropdown for their category.
 APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
@@ -175,7 +110,6 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
             {"key": "llm_provider", "label": "Provider", "type": "select",
              "options": ["ollama", "openai", "claude-code", "codex", "cli"]},
             {"key": "model", "label": "Chat model", "type": "model", "category": "chat"},
-            {"key": "vision_model", "label": "Vision model", "type": "model", "category": "vision"},
             {"key": "rag_embedding_provider", "label": "Embedding provider", "type": "select",
              "options": ["local", "ollama", "openai"]},
             {"key": "rag_embedding_model", "label": "Embedding model", "type": "model", "category": "embedding"},
@@ -184,32 +118,10 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
             {"key": "temperature", "label": "Temperature", "type": "float"},
         ],
     },
-    "twitch": {
-        "label": "Twitch",
-        "fields": [
-            {"key": "twitch_channel", "label": "Channel (no #)", "type": "text"},
-            {"key": "twitch_bot_username", "label": "Bot username (blank = anonymous read-only)", "type": "text"},
-            {"key": "twitch_oauth_token", "label": "OAuth token (blank = anonymous)", "type": "password"},
-            {"key": "twitch_reply_mode", "label": "Reply mode", "type": "select",
-             "options": ["mention", "all", "command"]},
-            {"key": "twitch_allowed_roles", "label": "Who can talk to NovaAI", "type": "select",
-             "options": ["everyone", "subscribers", "moderators"]},
-            {"key": "twitch_reply_cooldown_seconds", "label": "Reply cooldown (sec)", "type": "float"},
-        ],
-    },
-    "alerts": {
-        "label": "Stream Alerts (donations / subs / raids)",
-        "fields": [
-            {"key": "streamlabs_socket_token", "label": "Streamlabs socket token (blank = off)", "type": "password"},
-            {"key": "streamelements_jwt_token", "label": "StreamElements JWT token (blank = off)", "type": "password"},
-            {"key": "streamlabs_platforms", "label": "Streamlabs platforms (blank = all; e.g. twitch,kick)", "type": "str"},
-        ],
-    },
     "voice": {
         "label": "Voice (TTS)",
         "fields": [
             {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
-            {"key": "audio_output", "label": "Audio output (voice/singing/music)", "type": "select", "options": ["speaker", "browser", "both"]},
             {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
             {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
             {"key": "xtts_speed", "label": "Speed", "type": "float"},
@@ -232,17 +144,6 @@ APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
             {"key": "music_provider_default", "label": "Music provider", "type": "select",
              "options": ["soundcloud", "radio", "deezer", "spotify"]},
             {"key": "soundcloud_stream_endpoint", "label": "Stream endpoint", "type": "text"},
-        ],
-    },
-    "singing": {
-        "label": "Singing",
-        "fields": [
-            {"key": "singing_enabled", "label": "Enable singing", "type": "bool"},
-            {"key": "singing_backend", "label": "Backend", "type": "select",
-             "options": ["local", "rvc", "cloud"]},
-            {"key": "rvc_model_path", "label": "RVC model .pth (rvc)", "type": "text"},
-            {"key": "singing_api_url", "label": "Singing API URL (cloud)", "type": "text"},
-            {"key": "singing_api_key", "label": "Singing API key (cloud)", "type": "password"},
         ],
     },
 }
@@ -1369,9 +1270,6 @@ def main() -> None:
             "Install it with:  pip install -r requirements-gui.txt\n"
             "Or run the headless browser UI instead:  python app.py --web"
         )
-    # The desktop GUI is a local app, so its sibling services (avatar overlay,
-    # Minecraft live view) stay bound to localhost only.
-    os.environ.setdefault("NOVA_BIND_HOST", "127.0.0.1")
     _set_windows_app_id()
 
     api = Api()
