@@ -478,11 +478,11 @@ function Choose-RunMode {
     if ($choice -eq 1) {
         $script:RunMode = "web"
         $script:InstallProfile = "voice"
-        Write-Ok "Run mode: Web  (base + voice + stream alerts)"
+        Write-Ok "Run mode: Web  (base + voice)"
     } else {
         $script:RunMode = "gui"
         $script:InstallProfile = "full"
-        Write-Ok "Run mode: GUI  (base + voice + stream alerts + desktop GUI)"
+        Write-Ok "Run mode: GUI  (base + voice + desktop GUI)"
     }
 }
 
