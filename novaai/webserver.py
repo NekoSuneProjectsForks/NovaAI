@@ -146,7 +146,7 @@ class NovaWebHandler(BaseHTTPRequestHandler):
         if path == "/events":
             self._serve_events()
             return
-        # Anything else: serve from the static dir (logo, avatar.html, etc.).
+        # Serve ordinary static assets from the application directory.
         target = (STATIC_DIR / path.lstrip("/")).resolve()
         if STATIC_DIR.resolve() in target.parents or target == STATIC_DIR.resolve():
             self._serve_file(target)
@@ -327,6 +327,7 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     httpd.daemon_threads = True
 
     shown_host = _local_ip() if host in {"0.0.0.0", "::"} else host
+    print(f"NovaAI web UI: http://{shown_host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
         httpd.serve_forever()
