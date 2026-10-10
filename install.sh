@@ -189,8 +189,8 @@ install_system_deps() {
 # Ask HOW NovaAI should run — GUI window or browser/web. This single choice
 # drives the dependency set and the launcher that gets created:
 #
-#   GUI → base + voice + stream alerts + desktop GUI   (profile: full)
-#   Web → base + voice + stream alerts                 (profile: voice)
+#   GUI → base + voice + desktop GUI   (profile: full)
+#   Web → base + voice                 (profile: voice)
 #
 # Both modes always include requirements.txt + requirements-voice.txt +
 # requirements-streaming.txt; GUI additionally installs requirements-gui.txt.
@@ -210,9 +210,9 @@ choose_run_mode() {
         *) RUN_MODE="web"; INSTALL_PROFILE="voice"; NEED_VOICE=true; NEED_GUI=false ;;
     esac
     if [[ "$NEED_GUI" == "true" ]]; then
-        ok "Run mode: GUI  (base + voice + stream alerts + desktop GUI)"
+        ok "Run mode: GUI  (base + voice + desktop GUI)"
     else
-        ok "Run mode: Web  (base + voice + stream alerts)"
+        ok "Run mode: Web  (base + voice)"
     fi
 }
 
