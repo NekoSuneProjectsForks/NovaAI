@@ -445,7 +445,7 @@ function Run-Setup {
 
     Configure-LLMEnv -LLMConfig $LLMConfig
 
-    # Tell setup.py which dependency profile to install (voice/full). Both pull
+    # Tell setup.py which dependency profile to install (voice/full).
     $env:NOVA_INSTALL_PROFILE = if ($script:InstallProfile) { $script:InstallProfile } else { "full" }
 
     Push-Location $INSTALL_DIR
@@ -465,8 +465,8 @@ function Run-Setup {
 # ── Run mode (GUI vs Web) ────────────────────────────────────────────────────
 
 # Ask HOW NovaAI should run. Drives the dependency profile and the shortcut:
-#   GUI → base + voice + stream alerts + desktop GUI   (profile: full)
-#   Web → base + voice + stream alerts                 (profile: voice)
+#   GUI → base + voice + desktop GUI   (profile: full)
+#   Web → base + voice                 (profile: voice)
 # Both always install requirements.txt + -voice.txt; GUI adds
 # requirements-gui.txt.
 function Choose-RunMode {
