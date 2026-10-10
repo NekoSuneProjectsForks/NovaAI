@@ -446,7 +446,6 @@ function Run-Setup {
     Configure-LLMEnv -LLMConfig $LLMConfig
 
     # Tell setup.py which dependency profile to install (voice/full). Both pull
-    # in requirements-streaming.txt so live Streamlabs/StreamElements alerts work.
     $env:NOVA_INSTALL_PROFILE = if ($script:InstallProfile) { $script:InstallProfile } else { "full" }
 
     Push-Location $INSTALL_DIR
@@ -468,7 +467,7 @@ function Run-Setup {
 # Ask HOW NovaAI should run. Drives the dependency profile and the shortcut:
 #   GUI → base + voice + stream alerts + desktop GUI   (profile: full)
 #   Web → base + voice + stream alerts                 (profile: voice)
-# Both always install requirements.txt + -voice.txt + -streaming.txt; GUI adds
+# Both always install requirements.txt + -voice.txt; GUI adds
 # requirements-gui.txt.
 function Choose-RunMode {
     $choice = Ask-Choice "How do you want to run NovaAI?" @(
