@@ -53,19 +53,6 @@ def normalize_stt_provider(value: str) -> str:
 def normalize_llm_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {
-        "claude",
-        "claude-code",
-        "claudecode",
-        "claude-cli",
-        "claude_code",
-        "anthropic-cli",
-    }:
-        return "claude-code"
-    if normalized in {"codex", "codex-cli", "codex_cli", "openai-codex"}:
-        return "codex"
-    if normalized in {"cli", "custom-cli", "command", "shell"}:
-        return "cli"
-    if normalized in {
         "openai",
         "chatgpt",
         "openai-compatible",
@@ -81,22 +68,6 @@ def normalize_llm_provider(value: str) -> str:
     }:
         return "openai"
     return "ollama"
-
-
-def resolve_model_label(
-    provider: str,
-    explicit_model: str | None,
-    ollama_default: str,
-    cli_model: str | None,
-) -> str:
-    if provider in {"claude-code", "codex", "cli"}:
-        defaults = {
-            "claude-code": "Claude Code (CLI)",
-            "codex": "Codex (CLI)",
-            "cli": "Custom CLI",
-        }
-        return cli_model or defaults.get(provider, provider)
-    return explicit_model or ollama_default
 
 
 def normalize_web_safesearch(value: str) -> str:
@@ -154,15 +125,6 @@ def normalize_tts_provider(value: str) -> str:
     if normalized in {"gtts", "google-tts", "google_tts", "google"}:
         return "gtts"
     return "xtts"
-
-
-def normalize_rag_embedding_provider(value: str) -> str:
-    normalized = value.strip().lower()
-    if normalized in {"ollama", "ollama-embed", "ollama_embeddings"}:
-        return "ollama"
-    if normalized in {"openai", "openai-compatible", "api", "remote"}:
-        return "openai"
-    return "local"
 
 
 def resolve_llm_api_url(provider: str, raw_url: str | None) -> str:
@@ -232,11 +194,6 @@ class Config:
     llm_api_key: str | None
     llm_keep_alive: str
     llm_num_predict: int
-    llm_num_ctx: int
-    llm_cli_command: str | None
-    claude_cli_path: str | None
-    codex_cli_path: str | None
-    cli_model: str | None
     tts_provider: str
     tts_language: str
     xtts_model_name: str
@@ -284,12 +241,7 @@ class Config:
     speaker_device_index: int | None
     mic_sample_rate: int | None
     mic_chunk_size: int
-    # RAG memory
-    rag_enabled: bool
-    rag_embedding_provider: str
-    rag_embedding_model: str
-    rag_top_k: int
-    rag_min_score: float
+
     @classmethod
     def from_env(cls) -> "Config":
         load_dotenv()
@@ -340,17 +292,6 @@ class Config:
             performance_profile.ollama_num_predict
             if performance_profile is not None
             else max(48, int(os.getenv("OLLAMA_NUM_PREDICT", "1200")))
-        )
-        # Context window sent to Ollama. 0 = leave it to Ollama's default.
-        # Set this (e.g. 4096) when a backend GPU is small: long-context models
-        # like dolphin3/llama3.2 advertise a 128K window, and Ollama sizes its
-        # memory estimate for the *full* window, which makes it refuse to load
-        # on modest GPUs ("requires NN GiB"). Capping num_ctx fixes that.
-        llm_num_ctx = max(
-            0,
-            int(
-                os.getenv("OLLAMA_NUM_CTX", os.getenv("LLM_NUM_CTX", "0"))
-            ),
         )
         xtts_stream_chunk_size = (
             performance_profile.xtts_stream_chunk_size
@@ -404,22 +345,15 @@ class Config:
         llm_provider = normalize_llm_provider(
             os.getenv("LLM_PROVIDER", os.getenv("CHAT_PROVIDER", "ollama"))
         )
-        # Pick the right base URL per provider. For Ollama, prefer the local
-        # OLLAMA_API_URL so a generic LLM_API_URL (often an OpenAI-compatible proxy
-        # like LiteLLM) doesn't hijack local Ollama and cause gateway timeouts.
-        if llm_provider == "ollama":
-            raw_llm_url = (
-                parse_optional_str_env("OLLAMA_API_URL")
-                or parse_optional_str_env("LLM_API_URL")
-            )
-        elif llm_provider == "openai":
-            raw_llm_url = (
-                parse_optional_str_env("LLM_API_URL")
-                or parse_optional_str_env("OPENAI_API_URL")
-            )
-        else:
-            raw_llm_url = None  # CLI providers don't use an HTTP URL
-        llm_api_url = resolve_llm_api_url(llm_provider, raw_llm_url)
+        llm_api_url = resolve_llm_api_url(
+            llm_provider,
+            parse_optional_str_env("LLM_API_URL")
+            or (
+                parse_optional_str_env("OPENAI_API_URL")
+                if llm_provider == "openai"
+                else parse_optional_str_env("OLLAMA_API_URL")
+            ),
+        )
         web_search_provider = normalize_web_search_provider(
             os.getenv("WEB_SEARCH_PROVIDER", "searxng")
         )
@@ -455,11 +389,10 @@ class Config:
             ),
             system_summary=describe_system_capabilities(capabilities),
             llm_provider=llm_provider,
-            model=resolve_model_label(
-                llm_provider,
-                parse_optional_str_env("LLM_MODEL") or parse_optional_str_env("OPENAI_MODEL"),
-                os.getenv("OLLAMA_MODEL", "dolphin3"),
-                parse_optional_str_env("LLM_CLI_MODEL"),
+            model=(
+                parse_optional_str_env("LLM_MODEL")
+                or parse_optional_str_env("OPENAI_MODEL")
+                or os.getenv("OLLAMA_MODEL", "dolphin3")
             ),
             llm_api_url=llm_api_url,
             llm_api_key=(
@@ -471,11 +404,6 @@ class Config:
                 or os.getenv("OLLAMA_KEEP_ALIVE", "30m")
             ),
             llm_num_predict=llm_num_predict,
-            llm_num_ctx=llm_num_ctx,
-            llm_cli_command=parse_optional_str_env("LLM_CLI_COMMAND"),
-            claude_cli_path=parse_optional_str_env("CLAUDE_CLI_PATH"),
-            codex_cli_path=parse_optional_str_env("CODEX_CLI_PATH"),
-            cli_model=parse_optional_str_env("LLM_CLI_MODEL"),
             tts_provider=tts_provider,
             tts_language=os.getenv("XTTS_LANGUAGE")
             or os.getenv("TTS_LANG")
@@ -559,13 +487,4 @@ class Config:
             speaker_device_index=parse_optional_int_env("SPEAKER_DEVICE_INDEX"),
             mic_sample_rate=parse_optional_int_env("MIC_SAMPLE_RATE"),
             mic_chunk_size=mic_chunk_size,
-            rag_enabled=parse_bool_env("RAG_ENABLED", True),
-            rag_embedding_provider=normalize_rag_embedding_provider(
-                os.getenv("RAG_EMBEDDING_PROVIDER", "local")
-            ),
-            rag_embedding_model=os.getenv(
-                "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
-            ),
-            rag_top_k=max(1, min(12, int(os.getenv("RAG_TOP_K", "4")))),
-            rag_min_score=float(os.getenv("RAG_MIN_SCORE", "0.25")),
         )

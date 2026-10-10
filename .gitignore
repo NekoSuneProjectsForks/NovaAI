@@ -11,7 +11,6 @@
 .venv-xtts/
 venv/
 env/
-node_modules/
 
 # ── Python bytecode ──────────────────────────────────────────────────────
 __pycache__/
@@ -54,8 +53,3 @@ vendor/
 # ── OS junk ──────────────────────────────────────────────────────────────
 *.log
 *.tmp
-data/novaai.db-wal
-data/novaai.db-shm
-
-# Minecraft bridge auth token caches (live OAuth tokens — never commit)
-node/minecraft-bridge/.minecraft-auth/

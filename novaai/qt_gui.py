@@ -1916,6 +1916,30 @@ class SettingsPage(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Page: Avatar (placeholder)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AvatarPage(QWidget):
+    def __init__(self, win: "NovaAIWindow") -> None:
+        super().__init__()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setAlignment(Qt.AlignCenter)
+        root.addStretch()
+        icon = QLabel("⬡")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet(f"font-size:64px;color:{_C['muted']};")
+        root.addWidget(icon)
+        lbl = _label("Avatar AI  -  Coming Soon", "sec_title")
+        lbl.setAlignment(Qt.AlignCenter)
+        root.addWidget(lbl)
+        sub = _label("Live 3D avatar integration will appear here.", "muted")
+        sub.setAlignment(Qt.AlignCenter)
+        root.addWidget(sub)
+        root.addStretch()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Nav sidebar
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1928,6 +1952,7 @@ _NAV_ITEMS = [
     ("todo",       "✅  To-Do"),
     ("profiles",   "👤  Profiles"),
     ("settings",   "⚙  Settings"),
+    ("avatar",     "⬡  Avatar"),
 ]
 
 
@@ -2086,6 +2111,7 @@ class NovaAIWindow(QMainWindow):
         self.todo_page     = TodoPage(self)
         self.profiles_page = ProfilesPage(self)
         self.settings_page = SettingsPage(self)
+        self.avatar_page   = AvatarPage(self)
 
         self._pages = {
             "dashboard": (self.dash_page,     "Dashboard",    "Session controls and status"),
@@ -2096,6 +2122,7 @@ class NovaAIWindow(QMainWindow):
             "todo":      (self.todo_page,       "To-Do",        "Task list"),
             "profiles":  (self.profiles_page,  "Profiles",     "Manage companion profiles"),
             "settings":  (self.settings_page,  "Settings",     "Audio devices and diagnostics"),
+            "avatar":    (self.avatar_page,    "Avatar",       "3D avatar system"),
         }
         for page, _title, _sub in self._pages.values():
             self.stack.addWidget(page)
@@ -2144,6 +2171,7 @@ class NovaAIWindow(QMainWindow):
         "todo":      ("To-Do",       "Task list"),
         "profiles":  ("Profiles",    "Manage companion profiles"),
         "settings":  ("Settings",    "Audio devices and diagnostics"),
+        "avatar":    ("Avatar",      "3D avatar system"),
     }
 
     def _show_page(self, key: str) -> None:

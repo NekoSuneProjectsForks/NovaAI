@@ -1,27 +1,17 @@
 """NovaAI - pywebview desktop GUI with Tailwind CSS frontend."""
 from __future__ import annotations
 
-import base64
-import collections
 import json
 import os
-import queue
-import subprocess
 import sys
 import threading
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-# pywebview is the OPTIONAL native-desktop-GUI backend. The headless web server
-# (novaai/webserver.py) reuses the Api class from this module without needing it,
-# so guard the import: it's only actually used inside main() for `--gui`.
-try:
-    import webview
-except ImportError:  # pragma: no cover - desktop GUI extra not installed
-    webview = None  # type: ignore[assignment]
+import webview
 
 from .audio_input import (
     describe_selected_microphone,
@@ -30,9 +20,8 @@ from .audio_input import (
     recalibrate_microphone,
     recognize_speech,
 )
+from .chat import request_reply
 from .config import Config
-from .engine import GenerationRequest, generate_reply
-from .memory import MemoryStore
 from .features import (
     handle_feature_request,
     check_due_reminders,
@@ -63,7 +52,6 @@ from .media import handle_media_request
 from .media_player import stop_media_playback
 from .models import SessionState
 from .storage import (
-    _safe_profile_id,
     append_history,
     create_profile,
     delete_profile,
@@ -94,83 +82,7 @@ from .web_search import (
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "logo.ico"
-WINDOW_TITLE = "NovaAI Studio"
-WINDOWS_APP_ID = "NekoSuneProjects.NovaAI.Studio"
-_window: "webview.Window | None" = None
-# Pluggable JS sink for headless web mode. When set (by novaai/webserver.py),
-# Api._js() relays code here instead of to a pywebview window. See _js().
-_emit_js: "Callable[[str], None] | None" = None
-
-# General app settings shown in the Settings panel (override .env, persisted).
-# "model" fields render with an auto-detected dropdown for their category.
-APP_SETTINGS_SCHEMA: dict[str, dict[str, Any]] = {
-    "llm": {
-        "label": "AI Provider & Models",
-        "fields": [
-            {"key": "llm_provider", "label": "Provider", "type": "select",
-             "options": ["ollama", "openai", "claude-code", "codex", "cli"]},
-            {"key": "model", "label": "Chat model", "type": "model", "category": "chat"},
-            {"key": "rag_embedding_provider", "label": "Embedding provider", "type": "select",
-             "options": ["local", "ollama", "openai"]},
-            {"key": "rag_embedding_model", "label": "Embedding model", "type": "model", "category": "embedding"},
-            {"key": "llm_api_url", "label": "API URL (openai/LiteLLM)", "type": "text"},
-            {"key": "llm_api_key", "label": "API key", "type": "password"},
-            {"key": "temperature", "label": "Temperature", "type": "float"},
-        ],
-    },
-    "voice": {
-        "label": "Voice (TTS)",
-        "fields": [
-            {"key": "tts_provider", "label": "TTS engine", "type": "select", "options": ["xtts", "gtts"]},
-            {"key": "xtts_speaker", "label": "XTTS speaker", "type": "text"},
-            {"key": "xtts_speaker_wav", "label": "Voice clone .wav (optional)", "type": "text"},
-            {"key": "xtts_speed", "label": "Speed", "type": "float"},
-            {"key": "tts_language", "label": "Language", "type": "text"},
-        ],
-    },
-    "stt": {
-        "label": "Speech-to-Text",
-        "fields": [
-            {"key": "stt_provider", "label": "STT engine", "type": "select",
-             "options": ["faster-whisper", "google"]},
-            {"key": "stt_model", "label": "Whisper model", "type": "text"},
-            {"key": "stt_language", "label": "Language", "type": "text"},
-        ],
-    },
-    "media": {
-        "label": "Media",
-        "fields": [
-            {"key": "media_region", "label": "Region", "type": "text"},
-            {"key": "music_provider_default", "label": "Music provider", "type": "select",
-             "options": ["soundcloud", "radio", "deezer", "spotify"]},
-            {"key": "soundcloud_stream_endpoint", "label": "Stream endpoint", "type": "text"},
-        ],
-    },
-}
-_APP_FIELD_TYPES: dict[str, str] = {
-    f["key"]: f["type"] for meta in APP_SETTINGS_SCHEMA.values() for f in meta["fields"]
-}
-
-
-def _coerce_game_setting(value: Any, ftype: str) -> Any:
-    if ftype == "int":
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-    if ftype == "float":
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 1.0
-    if ftype == "bool":
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in {"1", "true", "yes", "on"}
-    if ftype == "list":
-        items = value if isinstance(value, (list, tuple)) else str(value).split(",")
-        return tuple(str(s).strip() for s in items if str(s).strip())
-    return str(value).strip()
+_window: webview.Window | None = None
 
 
 class Api:
@@ -186,19 +98,15 @@ class Api:
         self.session_started = False
         self.hands_free_enabled = False
         self.mic_muted = False
-        self.media_enabled = True   # music/radio playback feature toggle
         self.busy = False
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._initialized = False
-        self.memory: MemoryStore | None = None
 
     def initialize(self) -> dict[str, Any]:
         """Heavy init — called from JS once the loading screen is visible."""
         ensure_runtime_dirs()
         self.config = Config.from_env()
-        self._apply_saved_app_settings()
-        self.memory = MemoryStore(self.config)
         self.active_profile_id = get_active_profile_id()
         self.profile = load_profile() or {}
         self.state = SessionState(
@@ -207,8 +115,6 @@ class Api:
         )
         self.config.voice_enabled = False
         self.hands_free_enabled = self.config.input_mode == "voice"
-        # Restore the Voice & Input + Media toggles saved last session.
-        self._apply_saved_ui_prefs()
         self._initialized = True
         # Update window title with the loaded companion name
         global _window
@@ -229,21 +135,10 @@ class Api:
         return None
 
     def _js(self, code: str) -> None:
-        """Push JavaScript to the frontend.
-
-        In the native desktop GUI this runs in the pywebview window. In headless
-        web mode (novaai/webserver.py) there is no window, so the code is handed
-        to a pluggable sink (`_emit_js`) that relays it to connected browsers.
-        """
-        global _window, _emit_js
+        global _window
         if _window:
             try:
                 _window.evaluate_js(code)
-            except Exception:
-                pass
-        elif _emit_js is not None:
-            try:
-                _emit_js(code)
             except Exception:
                 pass
 
@@ -273,7 +168,6 @@ class Api:
             "mic_muted": self.mic_muted,
             "web_search": cfg.web_browsing_enabled if cfg else False,
             "web_auto_search": cfg.web_auto_search if cfg else False,
-            "media_enabled": self.media_enabled,
             "busy": self.busy,
             "model": cfg.model if cfg else "--",
             "llm_provider": cfg.llm_provider if cfg else "--",
@@ -307,7 +201,6 @@ class Api:
 
     def toggle_voice(self) -> dict[str, Any]:
         self.state.voice_enabled = not self.state.voice_enabled
-        self._save_ui_pref("voice_enabled", self.state.voice_enabled)
         self._push_state()
         return {"voice_enabled": self.state.voice_enabled}
 
@@ -315,7 +208,6 @@ class Api:
         if (err := self._not_ready()): return err
         self.hands_free_enabled = not self.hands_free_enabled
         self.config.input_mode = "voice" if self.hands_free_enabled else "text"
-        self._save_ui_pref("hands_free", self.hands_free_enabled)
         self._push_state()
         if self.hands_free_enabled and not self.busy and not self.mic_muted and self.session_started:
             threading.Thread(target=self._auto_listen, daemon=True).start()
@@ -323,7 +215,6 @@ class Api:
 
     def toggle_mic(self) -> dict[str, Any]:
         self.mic_muted = not self.mic_muted
-        self._save_ui_pref("mic_muted", self.mic_muted)
         self._push_state()
         if not self.mic_muted and self.hands_free_enabled and not self.busy and self.session_started:
             threading.Thread(target=self._auto_listen, daemon=True).start()
@@ -332,20 +223,12 @@ class Api:
     def toggle_web_search(self) -> dict[str, Any]:
         if (err := self._not_ready()): return err
         self.config.web_browsing_enabled = not self.config.web_browsing_enabled
-        self._save_ui_pref("web_search", self.config.web_browsing_enabled)
         self._push_state()
         return {"web_search": self.config.web_browsing_enabled}
-
-    def toggle_media(self) -> dict[str, Any]:
-        self.media_enabled = not self.media_enabled
-        self._save_ui_pref("media_enabled", self.media_enabled)
-        self._push_state()
-        return {"media_enabled": self.media_enabled}
 
     def toggle_auto_search(self) -> dict[str, Any]:
         if (err := self._not_ready()): return err
         self.config.web_auto_search = not self.config.web_auto_search
-        self._save_ui_pref("web_auto_search", self.config.web_auto_search)
         self._push_state()
         return {"web_auto_search": self.config.web_auto_search}
 
@@ -414,17 +297,6 @@ class Api:
             return {"ok": False, "msg": msg}
         finally:
             self._release()
-            # Re-arm hands-free listening no matter how the turn ended — normal
-            # reply, early-handled request, timeout, or a backend error. Without
-            # this, any failure mid-turn silently ends the conversation and Nova
-            # stops responding to speech after the first prompt.
-            if (
-                self.hands_free_enabled
-                and not self.mic_muted
-                and self.session_started
-                and not self._stopped()
-            ):
-                threading.Thread(target=self._auto_listen, daemon=True).start()
 
     def _auto_listen(self) -> None:
         time.sleep(0.3)
@@ -456,9 +328,9 @@ class Api:
         self._push_chat(user_name, user_text, "user")
         self._push_status("Thinking...")
 
-        # Media (music/radio) — only when the feature is enabled.
-        media_action = handle_media_request(user_text, self.profile, self.config) if self.media_enabled else None
-        if media_action and media_action.handled:
+        # Media
+        media_action = handle_media_request(user_text, self.profile, self.config)
+        if media_action.handled:
             self.profile = save_profile_by_id(self.active_profile_id, self.profile)
             append_history("user", user_text)
             append_history("assistant", media_action.response)
@@ -480,7 +352,10 @@ class Api:
             self._push_chat(companion, feature_result.response, "assistant")
             self._js("window.__onFeaturesChanged()")
             if self.state.voice_enabled and not self._stopped():
-                self._speak(feature_result.response, "neutral")
+                try:
+                    speak_text(feature_result.response, self.config, self.state)
+                except Exception:
+                    pass
             self._push_status("Ready.")
             return "Feature request handled."
 
@@ -519,17 +394,7 @@ class Api:
             return "Stopped."
 
         self._push_status("Generating reply...")
-        result = generate_reply(
-            GenerationRequest(
-                user_text=user_text,
-                profile=self.profile,
-                config=self.config,
-                source="chat",
-                web_context=web_context,
-                extra_system=self._recall(user_text),
-            )
-        )
-        reply = result.reply
+        reply = request_reply(user_text, self.profile, self.config, web_context=web_context)
 
         if self._stopped():
             self._push_status("Stopped.")
@@ -538,20 +403,23 @@ class Api:
         append_history("user", user_text)
         append_history("assistant", reply)
         self._push_chat(companion, reply, "assistant")
-        self._remember_exchange(user_name, user_text, reply, source="chat")
 
         if self.state.voice_enabled and not self._stopped():
             self._push_status("Speaking...")
-            self._speak(reply, result.emotion)
+            try:
+                audio_path = speak_text(reply, self.config, self.state)
+                if should_play_audio_after_synthesis(self.config) and not self._stopped():
+                    play_audio_file(audio_path, self.config.speaker_device_index)
+            except Exception:
+                pass
 
         if self._stopped():
             self._push_status("Stopped.")
             return "Stopped."
 
-        # Hands-free re-listen is re-armed by start_listen()'s finally block so
-        # it fires on every exit path (including errors), not just here.
         if from_voice and self.hands_free_enabled and not self.mic_muted:
             self._push_status("Listening...")
+            threading.Thread(target=self._auto_listen, daemon=True).start()
             return "Hands-free listening."
 
         self._push_status("Ready.")
@@ -572,278 +440,7 @@ class Api:
             self.busy = False
         self._push_state()
 
-    # ── memory (RAG) ────────────────────────────────────────────────────────────
-
-    def _recall(self, query: str) -> list[str]:
-        if not self.memory or not self.config or not self.config.rag_enabled:
-            return []
-        try:
-            memories = self.memory.recall(query, self.active_profile_id)
-        except Exception:
-            return []
-        if not memories:
-            return []
-        joined = "; ".join(memories)
-        return [f"Relevant things you remember: {joined}"]
-
-    def _remember_exchange(
-        self, speaker: str, user_text: str, reply: str, source: str
-    ) -> None:
-        if not self.memory or not self.config or not self.config.rag_enabled:
-            return
-        try:
-            self.memory.remember(
-                self.active_profile_id,
-                content=user_text,
-                source=source,
-                speaker=speaker,
-            )
-        except Exception:
-            pass
-
-    def get_memories(self) -> list[dict[str, Any]]:
-        if not self.memory:
-            return []
-        try:
-            return self.memory.list_recent(self.active_profile_id)
-        except Exception:
-            return []
-
-    def reinforce_memory(self, memory_id: int, delta: float) -> dict[str, Any]:
-        if not self.memory:
-            return {"ok": False, "msg": "Memory not ready."}
-        try:
-            self.memory.reinforce(int(memory_id), float(delta))
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "msg": str(exc)}
-
-    def forget_memory(self, memory_id: int) -> dict[str, Any]:
-        if not self.memory:
-            return {"ok": False, "msg": "Memory not ready."}
-        try:
-            self.memory.forget(int(memory_id))
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "msg": str(exc)}
-
-    def _speak(self, text: str, emotion: str = "neutral") -> None:
-        """Play speech through the configured text-to-speech backend."""
-        try:
-            audio_path = speak_text(text, self.config, self.state)
-            if should_play_audio_after_synthesis(self.config) and not self._stopped():
-                play_audio_file(audio_path, self.config.speaker_device_index)
-        except Exception:
-            pass
-
-    def _ollama_base(self) -> str:
-        url = (self.config.llm_api_url if self.config else "") or ""
-        # OLLAMA_API_URL env wins for the local daemon base.
-        env_url = os.environ.get("OLLAMA_API_URL", "")
-        for candidate in (env_url, url, "http://127.0.0.1:11434/api/chat"):
-            if candidate and "/api/" in candidate:
-                return candidate.split("/api/")[0].rstrip("/")
-        return "http://127.0.0.1:11434"
-
-    def _reresolve_llm_url(self) -> None:
-        """Recompute llm_api_url after a provider/url change."""
-        from .config import resolve_llm_api_url
-
-        provider = self.config.llm_provider
-        if provider == "ollama":
-            raw = os.environ.get("OLLAMA_API_URL") or "http://127.0.0.1:11434/api/chat"
-        elif provider == "openai":
-            raw = self.config.llm_api_url or os.environ.get("OPENAI_API_URL")
-        else:
-            raw = None
-        self.config.llm_api_url = resolve_llm_api_url(provider, raw)
-
-    # ── persisted UI prefs (voice/input toggles + media) ──────────────────────────
-
-    def _ui_prefs(self) -> dict[str, Any]:
-        from . import database
-        try:
-            return json.loads(database.get_state("ui_prefs", "{}") or "{}")
-        except Exception:
-            return {}
-
-    def _save_ui_pref(self, key: str, value: Any) -> None:
-        from . import database
-        try:
-            prefs = self._ui_prefs()
-            prefs[key] = value
-            database.set_state("ui_prefs", json.dumps(prefs))
-        except Exception:
-            pass
-
-    def _apply_saved_ui_prefs(self) -> None:
-        """Restore the Voice & Input toggles + Media toggle from last session."""
-        prefs = self._ui_prefs()
-        if "voice_enabled" in prefs:
-            self.state.voice_enabled = bool(prefs["voice_enabled"])
-            if self.config:
-                self.config.voice_enabled = self.state.voice_enabled
-        if "hands_free" in prefs:
-            self.hands_free_enabled = bool(prefs["hands_free"])
-            if self.config:
-                self.config.input_mode = "voice" if self.hands_free_enabled else "text"
-        if "mic_muted" in prefs:
-            self.mic_muted = bool(prefs["mic_muted"])
-        if self.config and "web_search" in prefs:
-            self.config.web_browsing_enabled = bool(prefs["web_search"])
-        if self.config and "web_auto_search" in prefs:
-            self.config.web_auto_search = bool(prefs["web_auto_search"])
-        if "media_enabled" in prefs:
-            self.media_enabled = bool(prefs["media_enabled"])
-
-    def _apply_saved_app_settings(self) -> None:
-        if not self.config:
-            return
-        try:
-            from . import database
-
-            store = json.loads(database.get_state("app_settings", "{}") or "{}")
-        except Exception:
-            return
-        for key, val in store.items():
-            ftype = _APP_FIELD_TYPES.get(key)
-            if ftype is not None:
-                try:
-                    setattr(self.config, key, _coerce_game_setting(val, ftype))
-                except Exception:
-                    pass
-        self._reresolve_llm_url()
-
-    def restart_app(self) -> dict[str, Any]:
-        """Relaunch NovaAI (applies any settings/code changes cleanly)."""
-        def _do_restart() -> None:
-            time.sleep(0.4)
-            try:
-                cwd = str(Path(__file__).resolve().parent.parent)
-                subprocess.Popen([sys.executable] + sys.argv, cwd=cwd)
-            except Exception:
-                pass
-            os._exit(0)
-
-        threading.Thread(target=_do_restart, daemon=True).start()
-        return {"ok": True, "msg": "Restarting NovaAI..."}
-
-    def get_app_settings(self) -> dict[str, Any]:
-        sections: dict[str, Any] = {}
-        for name, meta in APP_SETTINGS_SCHEMA.items():
-            fields = []
-            for f in meta["fields"]:
-                val = getattr(self.config, f["key"], "") if self.config else ""
-                if val is None:
-                    val = ""
-                fields.append({**f, "value": val})
-            sections[name] = {"label": meta["label"], "fields": fields}
-        return {"sections": sections}
-
-    def save_app_settings(self, section: str, values: dict[str, Any]) -> dict[str, Any]:
-        if (err := self._not_ready()):
-            return err
-        meta = APP_SETTINGS_SCHEMA.get(section)
-        if not meta:
-            return {"ok": False, "msg": f"Unknown section: {section}"}
-        applied: dict[str, Any] = {}
-        for f in meta["fields"]:
-            if f["key"] in (values or {}):
-                coerced = _coerce_game_setting(values[f["key"]], f["type"])
-                setattr(self.config, f["key"], coerced)
-                applied[f["key"]] = list(coerced) if isinstance(coerced, tuple) else coerced
-        if section == "llm":
-            self._reresolve_llm_url()
-            if self.memory:
-                self.memory.config = self.config  # pick up new embedding settings
-        try:
-            from . import database
-
-            store = json.loads(database.get_state("app_settings", "{}") or "{}")
-            store.update(applied)
-            database.set_state("app_settings", json.dumps(store))
-        except Exception:
-            pass
-        self._push_state()
-        msg = "Settings saved."
-        return {"ok": True, "msg": msg}
-
-    # ── model auto-detect ───────────────────────────────────────────────────────
-
-    _VISION_HINTS = ("llava", "moondream", "vision", "bakllava", "minicpm-v",
-                     "qwen2-vl", "qwen2.5vl", "janus", "llama3.2-vision")
-    _EMBED_HINTS = ("embed", "bge-", "bge:", "nomic-embed", "all-minilm", "minilm",
-                    "gte-", "e5-", "mxbai-embed", "snowflake-arctic-embed", "embeddinggemma")
-
-    @classmethod
-    def _categorize_model(cls, name: str) -> str:
-        ln = name.lower()
-        if any(h in ln for h in cls._EMBED_HINTS) or "embedding" in ln:
-            return "embedding"
-        if any(h in ln for h in cls._VISION_HINTS):
-            return "vision"
-        return "chat"
-
-    def _ollama_tags(self) -> list[str]:
-        try:
-            resp = requests.get(self._ollama_base() + "/api/tags", timeout=5)
-            resp.raise_for_status()
-            return [m.get("name", "") for m in resp.json().get("models", []) if m.get("name")]
-        except Exception:
-            return []
-
-    def _openai_models(self) -> list[str]:
-        """List models from the configured OpenAI-compatible / LiteLLM endpoint.
-
-        Works whenever an API URL is set (e.g. a LiteLLM gateway), independent of
-        the active provider, so the dropdowns can always show what's available.
-        """
-        if not self.config:
-            return []
-        raw = (
-            os.environ.get("LLM_API_URL")
-            or os.environ.get("OPENAI_API_URL")
-            or (self.config.llm_api_url if self.config.llm_provider == "openai" else "")
-        )
-        if not raw or not raw.startswith("http"):
-            return []
-        base = raw.split("/chat/completions")[0].rstrip("/")
-        url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
-        headers = {}
-        key = self.config.llm_api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        try:
-            resp = requests.get(url, headers=headers, timeout=8)
-            resp.raise_for_status()
-            data = resp.json()
-            items = data.get("data", data if isinstance(data, list) else [])
-            return [m.get("id", "") for m in items if isinstance(m, dict) and m.get("id")]
-        except Exception:
-            return []
-
-    def get_models(self) -> dict[str, Any]:
-        """Auto-detect available models live, grouped chat/vision/embedding.
-
-        Always queries the API(s) fresh so newly-added models show up: the local
-        Ollama daemon AND any configured OpenAI/LiteLLM gateway.
-        """
-        buckets: dict[str, set] = {"chat": set(), "vision": set(), "embedding": set()}
-        for name in self._ollama_tags():
-            buckets[self._categorize_model(name)].add(name)
-        for name in self._openai_models():          # LiteLLM/OpenAI, if URL set
-            buckets[self._categorize_model(name)].add(name)
-        provider = self.config.llm_provider if self.config else "ollama"
-        if provider == "claude-code":
-            buckets["chat"].update(["sonnet", "opus", "haiku"])
-        elif provider == "codex":
-            buckets["chat"].update(["gpt-5-codex", "gpt-5", "o4-mini"])
-        return {
-            "provider": provider,
-            "chat": sorted(buckets["chat"]),
-            "vision": sorted(buckets["vision"]),
-            "embedding": sorted(buckets["embedding"]),
-        }
+    # ── reminders ─────────────────────────────────────────────────────────────
 
     def get_reminders(self) -> list[dict[str, Any]]:
         return list_reminders(self.profile)
@@ -1018,59 +615,6 @@ class Api:
         except Exception as exc:
             return {"ok": False, "msg": str(exc)}
 
-    def export_profile(self, profile_id: str) -> dict[str, Any]:
-        """Return a profile wrapped in a portable envelope for download.
-
-        The frontend turns this into a .json file the user can move to another
-        machine (e.g. local PC -> Raspberry Pi) and import there.
-        """
-        try:
-            profile = load_profile_by_id(profile_id)
-            name = str(profile.get("profile_name", profile_id)) or profile_id
-            safe = _safe_profile_id(name)
-            return {
-                "ok": True,
-                "filename": f"{safe}.nova-profile.json",
-                "data": {
-                    "nova_profile_export": True,
-                    "version": 1,
-                    "profile": profile,
-                },
-            }
-        except Exception as exc:
-            return {"ok": False, "msg": str(exc)}
-
-    def import_profile(self, data: Any, name: str = "") -> dict[str, Any]:
-        """Create a new profile from imported JSON (envelope or raw profile).
-
-        Accepts either the export envelope produced by ``export_profile`` or a
-        bare profile dict. The imported profile always becomes a NEW profile
-        (its id is de-duplicated), so importing never overwrites an existing one.
-        """
-        try:
-            if isinstance(data, str):
-                data = json.loads(data)
-            if not isinstance(data, dict):
-                return {"ok": False, "msg": "Invalid profile file."}
-            src = data.get("profile") if isinstance(data.get("profile"), dict) else data
-            if not isinstance(src, dict) or not src:
-                return {"ok": False, "msg": "Invalid profile file."}
-            # Drop legacy custom integrations when importing old profiles.
-            details = src.get("profile_details")
-            if isinstance(details, dict):
-                details.pop("avatar", None)
-                details.pop("alerts", None)
-            profile_name = (
-                str(name).strip()
-                or str(src.get("profile_name", "")).strip()
-                or str(src.get("companion_name", "")).strip()
-                or "Imported Profile"
-            )
-            p = create_profile(profile_name, base_profile=src)
-            return {"ok": True, "profile_id": p["profile_id"], "profile_name": p["profile_name"]}
-        except Exception as exc:
-            return {"ok": False, "msg": str(exc)}
-
     def get_profile_detail(self, profile_id: str) -> dict[str, Any]:
         try:
             return load_profile_by_id(profile_id)
@@ -1180,7 +724,12 @@ class Api:
         """Speak an alert message via TTS if voice is enabled."""
         if not self._initialized or not self.config:
             return
-        self._speak(text, "neutral")
+        try:
+            audio_path = speak_text(text, self.config, self.state)
+            if should_play_audio_after_synthesis(self.config):
+                play_audio_file(audio_path, self.config.speaker_device_index)
+        except Exception:
+            pass
 
     def start_reminder_checker(self) -> None:
         def _checker():
@@ -1211,18 +760,6 @@ class Api:
         t.start()
 
 
-def _set_windows_app_id() -> None:
-    """Set the Windows taskbar app identity before the GUI window is created."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
-    except Exception:
-        pass
-
-
 def _set_window_icon() -> None:
     """Set the taskbar and title-bar icon on Windows via Win32 API."""
     if sys.platform != "win32" or not ICON_PATH.exists():
@@ -1235,43 +772,26 @@ def _set_window_icon() -> None:
         ICON_SMALL = 0
         ICON_BIG = 1
         LR_LOADFROMFILE = 0x0010
-        LR_DEFAULTSIZE = 0x0040
-        IMAGE_ICON = 1
 
         icon_path = str(ICON_PATH)
-        h_small = user32.LoadImageW(0, icon_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
-        h_big = user32.LoadImageW(
-            0,
-            icon_path,
-            IMAGE_ICON,
-            0,
-            0,
-            LR_LOADFROMFILE | LR_DEFAULTSIZE,
-        )
+        h_small = user32.LoadImageW(0, icon_path, 1, 16, 16, LR_LOADFROMFILE)
+        h_big = user32.LoadImageW(0, icon_path, 1, 32, 32, LR_LOADFROMFILE)
 
-        for _ in range(20):
-            hwnd = user32.FindWindowW(None, WINDOW_TITLE)
-            if hwnd:
-                if h_small:
-                    user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
-                if h_big:
-                    user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
-                return
-            time.sleep(0.25)
+        # Try multiple ways to find our window handle
+        hwnd = user32.FindWindowW(None, "NovaAI Studio")
+        if not hwnd:
+            hwnd = user32.GetForegroundWindow()
+        if hwnd:
+            if h_small:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
+            if h_big:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
     except Exception:
         pass
 
 
 def main() -> None:
     global _window
-    if webview is None:
-        raise SystemExit(
-            "The desktop GUI needs pywebview, which isn't installed.\n"
-            "Install it with:  pip install -r requirements-gui.txt\n"
-            "Or run the headless browser UI instead:  python app.py --web"
-        )
-    _set_windows_app_id()
-
     api = Api()
     html_path = STATIC_DIR / "index.html"
 
@@ -1280,7 +800,7 @@ def main() -> None:
         threading.Thread(target=_set_window_icon, daemon=True).start()
 
     _window = webview.create_window(
-        title=WINDOW_TITLE,
+        title="NovaAI Studio",
         url=str(html_path),
         js_api=api,
         width=1340,

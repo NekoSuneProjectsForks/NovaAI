@@ -11,7 +11,7 @@
         .\install.ps1
 
     What it does:
-        1. Checks for (and optionally installs) Python 3.10+
+        1. Checks for (and optionally installs) Python 3.11+
         2. Asks which LLM provider you want (Ollama, OpenAI, OpenRouter, LM Studio, custom)
         3. Installs Ollama if needed, or configures API keys for cloud providers
         4. Clones or downloads NovaAI
@@ -29,7 +29,7 @@ $ProgressPreference = "SilentlyContinue"
 $REPO_URL     = "https://github.com/cachenetworks/NovaAI"
 $REPO_BRANCH  = "main"
 $INSTALL_DIR  = "$env:USERPROFILE\NovaAI"
-$PYTHON_MIN   = [version]"3.10.0"
+$PYTHON_MIN   = [version]"3.11.0"
 $PYTHON_WINGET_ID = "Python.Python.3.11"
 $OLLAMA_WINGET_ID = "Ollama.Ollama"
 
@@ -186,43 +186,38 @@ function Show-Banner {
 # ── Step 1: Python ───────────────────────────────────────────────────────────
 
 function Ensure-Python {
-    Write-Step "1/7" "Checking for Python 3.10+..."
+    Write-Step "1/7" "Checking for Python 3.11+..."
 
-    # Prefer a Python the voice/ML stack ships wheels for (3.12 / 3.11 / 3.10) via
-    # the py launcher first, so a box that ALSO has a brand-new 3.13/3.14 doesn't
-    # get picked — coqui-tts/numba/llvmlite/torch don't have wheels there yet and
-    # pip would try (and fail) to build them from source.
-    if (Has-Command "py") {
-        foreach ($v in @("3.12", "3.11", "3.10")) {
-            try {
-                $ver = & py -$v --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
-                if ($ver -and ([version]$ver -ge $PYTHON_MIN)) {
-                    Write-Ok "Found py -$v ($ver)"
-                    return "py -$v"
-                }
-            } catch { }
-        }
-    }
-
-    # Otherwise use whatever python/python3 is on PATH (must be >= 3.10).
-    foreach ($cmd in @("python", "python3")) {
+    $pythonCmd = $null
+    foreach ($cmd in @("python", "python3", "py")) {
         if (Has-Command $cmd) {
             try {
                 $ver = & $cmd --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
                 if ($ver -and ([version]$ver -ge $PYTHON_MIN)) {
+                    $pythonCmd = $cmd
                     Write-Ok "Found $cmd $ver"
-                    return $cmd
+                    return $pythonCmd
                 }
             } catch { }
         }
     }
 
-    Write-Warn "Python 3.10+ not found."
+    if (Has-Command "py") {
+        try {
+            $ver = & py -3.11 --version 2>&1 | Select-String -Pattern "(\d+\.\d+\.\d+)" | ForEach-Object { $_.Matches[0].Value }
+            if ($ver -and ([version]$ver -ge $PYTHON_MIN)) {
+                Write-Ok "Found py -3.11 ($ver)"
+                return "py"
+            }
+        } catch { }
+    }
+
+    Write-Warn "Python 3.11+ not found."
 
     if (-not (Has-Winget)) {
         Write-Fail "winget is not available to install Python automatically."
-        Write-Fail "Please install Python 3.10-3.12 from https://python.org and run this again."
-        throw "Python 3.10+ is required."
+        Write-Fail "Please install Python 3.11+ from https://python.org and run this again."
+        throw "Python 3.11+ is required."
     }
 
     if (Ask-YesNo "Install Python 3.11 via winget?") {
@@ -231,10 +226,9 @@ function Ensure-Python {
         if ($LASTEXITCODE -ne 0) { throw "Failed to install Python via winget." }
         Refresh-Path
         Write-Ok "Python installed."
-        if (Has-Command "py") { return "py -3.11" }
         return "python"
     } else {
-        throw "Python 3.10+ is required. Install it and run this again."
+        throw "Python 3.11+ is required. Install it and run this again."
     }
 }
 
@@ -445,44 +439,17 @@ function Run-Setup {
 
     Configure-LLMEnv -LLMConfig $LLMConfig
 
-    # Tell setup.py which dependency profile to install (voice/full).
-    $env:NOVA_INSTALL_PROFILE = if ($script:InstallProfile) { $script:InstallProfile } else { "full" }
-
     Push-Location $INSTALL_DIR
     try {
-        # $PythonCmd is already a runnable invocation ("python", "python3", or
-        # "py -3.11"), so it can be passed straight through.
-        $setupExit = Invoke-Native "$PythonCmd setup.py --setup"
-        if ($setupExit -ne 0) {
-            throw "Setup script failed (exit $setupExit). See the pip/setup output above for the real cause."
+        if ($PythonCmd -eq "py") {
+            $setupExit = Invoke-Native "py -3.11 setup.py --setup"
+        } else {
+            $setupExit = Invoke-Native "$PythonCmd setup.py --setup"
         }
+        if ($setupExit -ne 0) { throw "Setup script failed." }
         Write-Ok "Setup complete."
     } finally {
         Pop-Location
-    }
-}
-
-# ── Run mode (GUI vs Web) ────────────────────────────────────────────────────
-
-# Ask HOW NovaAI should run. Drives the dependency profile and the shortcut:
-#   GUI → base + voice + desktop GUI   (profile: full)
-#   Web → base + voice                 (profile: voice)
-# Both always install requirements.txt + -voice.txt; GUI adds
-# requirements-gui.txt.
-function Choose-RunMode {
-    $choice = Ask-Choice "How do you want to run NovaAI?" @(
-        "GUI  — native desktop window (recommended on Windows)",
-        "Web  — browser UI, reachable from any device"
-    ) 0  # default to GUI on Windows
-
-    if ($choice -eq 1) {
-        $script:RunMode = "web"
-        $script:InstallProfile = "voice"
-        Write-Ok "Run mode: Web  (base + voice)"
-    } else {
-        $script:RunMode = "gui"
-        $script:InstallProfile = "full"
-        Write-Ok "Run mode: GUI  (base + voice + desktop GUI)"
     }
 }
 
@@ -523,7 +490,7 @@ function Ask-GPU {
 
         Write-Info "Installing CUDA $cudaLabel PyTorch... (this downloads ~2 GB)"
         $venvPython = "$INSTALL_DIR\.venv\Scripts\python.exe"
-        $pipExit = Invoke-Native "`"$venvPython`" -m pip install --upgrade --index-url $cudaUrl torch torchaudio torchcodec -q"
+        $pipExit = Invoke-Native "`"$venvPython`" -m pip install --upgrade --index-url $cudaUrl torch torchaudio -q"
         if ($pipExit -eq 0) {
             Write-Ok "CUDA $cudaLabel PyTorch installed. Voice synthesis will be much faster!"
         } else {
@@ -532,88 +499,40 @@ function Ask-GPU {
     } elseif ($choice -eq 1) {
         Write-Ok "Using CPU mode. You can add GPU support later."
         Write-Info "To add GPU later, run:"
-        Write-Info "  $INSTALL_DIR\.venv\Scripts\python.exe -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio torchcodec"
+        Write-Info "  $INSTALL_DIR\.venv\Scripts\python.exe -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio"
     } else {
         Write-Ok "Skipped. Default CPU mode works out of the box."
     }
 }
 
-# ── Step 7: Launcher + shortcut (both GUI and Web modes) ─────────────────────
+# ── Step 7: Shortcut ────────────────────────────────────────────────────────
 
-function Create-Launchers {
-    $mode = if ($script:RunMode) { $script:RunMode } else { "gui" }
-    Write-Step "7/7" "Creating launcher (mode: $mode)..."
+function Ask-Shortcut {
+    Write-Step "7/7" "Desktop shortcut..."
 
-    # A run-nova.bat that always starts NovaAI in the chosen mode. The mode lives
-    # in .nova-run-mode so it can be flipped later without re-installing.
-    Set-Content -Path "$INSTALL_DIR\.nova-run-mode" -Value "--$mode" -Encoding ASCII
-    $batPath = "$INSTALL_DIR\run-nova.bat"
-    $icoPath = "$INSTALL_DIR\data\logo.ico"
-    if ($mode -eq "web") {
-        $batBody = @"
-@echo off
-REM Auto-generated by install.ps1 — starts NovaAI (web) and opens the dashboard.
-cd /d "%~dp0"
-start "" "%~dp0.venv\Scripts\python.exe" app.py --web %*
-timeout /t 2 >nul
-start "" "http://127.0.0.1:8800"
-"@
-    } else {
-        $batBody = @"
-@echo off
-REM Auto-generated by install.ps1 — starts NovaAI in GUI mode.
-cd /d "%~dp0"
-"%~dp0.venv\Scripts\pythonw.exe" app.py --gui %*
-"@
-    }
-    Set-Content -Path $batPath -Value $batBody -Encoding ASCII
-    Write-Ok "Launcher script: $batPath  (mode: --$mode)"
-
-    $shell = New-Object -ComObject WScript.Shell
-    try {
-        $launcherShortcutPath = "$INSTALL_DIR\NovaAI.lnk"
-        $launcherShortcut = $shell.CreateShortcut($launcherShortcutPath)
-        $launcherShortcut.TargetPath = $batPath
-        $launcherShortcut.Arguments = ""
-        $launcherShortcut.WorkingDirectory = $INSTALL_DIR
-        $launcherShortcut.Description = "NovaAI - AI Companion Studio ($mode)"
-        if (Test-Path $icoPath) {
-            $launcherShortcut.IconLocation = "$icoPath,0"
-        }
-        $launcherShortcut.Save()
-        Write-Ok "Icon launcher: $launcherShortcutPath"
-    } catch {
-        Write-Warn "Couldn't create icon launcher: $_"
-    }
-
-    if (-not (Ask-YesNo "Create a desktop shortcut for NovaAI?")) {
-        Write-Ok "No desktop shortcut created. Start with: run-nova.bat or NovaAI.lnk"
-        return
-    }
-    try {
-        $desktopPath = [Environment]::GetFolderPath("Desktop")
-        $shortcutPath = "$desktopPath\NovaAI.lnk"
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        if ($mode -eq "web") {
-            # Web mode: launch via the .bat so the browser opens too.
-            $shortcut.TargetPath = "$INSTALL_DIR\run-nova.bat"
-            $shortcut.Arguments = ""
-        } else {
-            # GUI mode: launch the window directly with pythonw (no console).
+    if (Ask-YesNo "Create a desktop shortcut for NovaAI?") {
+        try {
+            $desktopPath = [Environment]::GetFolderPath("Desktop")
+            $shortcutPath = "$desktopPath\NovaAI.lnk"
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($shortcutPath)
             $shortcut.TargetPath = "$INSTALL_DIR\.venv\Scripts\pythonw.exe"
             $shortcut.Arguments = "`"$INSTALL_DIR\app.py`" --gui"
-        }
-        $shortcut.WorkingDirectory = $INSTALL_DIR
-        $shortcut.Description = "NovaAI - AI Companion Studio ($mode)"
+            $shortcut.WorkingDirectory = $INSTALL_DIR
+            $shortcut.Description = "NovaAI - AI Companion Studio"
 
-        if (Test-Path $icoPath) {
-            $shortcut.IconLocation = "$icoPath,0"
-        }
+            $icoPath = "$INSTALL_DIR\data\logo.ico"
+            if (Test-Path $icoPath) {
+                $shortcut.IconLocation = "$icoPath,0"
+            }
 
-        $shortcut.Save()
-        Write-Ok "Shortcut created on your desktop ($mode mode)."
-    } catch {
-        Write-Warn "Couldn't create shortcut: $_"
+            $shortcut.Save()
+            Write-Ok "Shortcut created on your desktop."
+        } catch {
+            Write-Warn "Couldn't create shortcut: $_"
+        }
+    } else {
+        Write-Ok "No shortcut created."
     }
 }
 
@@ -645,18 +564,12 @@ function Show-Finish {
     }
     Write-Host $providerLabel -ForegroundColor White
     Write-Host ""
-    $mode = if ($script:RunMode) { $script:RunMode } else { "gui" }
-    Write-Host "    Run mode:     " -NoNewline -ForegroundColor DarkGray
-    Write-Host "$mode (profile: $($script:InstallProfile))" -ForegroundColor White
-    Write-Host ""
     Write-Host "    To launch NovaAI anytime:" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "      cd $INSTALL_DIR" -ForegroundColor Cyan
-    Write-Host "      .\run-nova.bat" -ForegroundColor Cyan -NoNewline
-    Write-Host "          # starts in $mode mode" -ForegroundColor DarkGray
+    Write-Host "      python setup.py" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "    Or use the desktop shortcut if you created one." -ForegroundColor DarkGray
-    Write-Host "    Switch modes later by editing .nova-run-mode (--gui / --web)." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "    Change LLM provider anytime by editing " -ForegroundColor DarkGray -NoNewline
     Write-Host ".env" -ForegroundColor White -NoNewline
@@ -733,9 +646,6 @@ function Main {
     # Step 2: Choose LLM provider
     $llmConfig = Choose-LLMProvider
 
-    # Run mode (GUI vs Web) — drives deps + launcher.
-    Choose-RunMode
-
     # Step 3: Ollama (only if chosen)
     $ollamaExe = Ensure-Ollama -Needed $llmConfig.NeedOllama
 
@@ -753,22 +663,17 @@ function Main {
     # Step 6: GPU
     Ask-GPU
 
-    # Step 7: Launcher + shortcut (both modes)
-    Create-Launchers
+    # Step 7: Shortcut
+    Ask-Shortcut
 
     Show-Finish -LLMConfig $llmConfig
 
     if (Ask-YesNo "Launch NovaAI now?") {
         Write-Host ""
-        $mode = if ($script:RunMode) { $script:RunMode } else { "gui" }
-        Write-Info "Starting NovaAI in $mode mode..."
+        Write-Info "Starting NovaAI..."
         Push-Location $INSTALL_DIR
         $venvPython = "$INSTALL_DIR\.venv\Scripts\python.exe"
-        if ($mode -eq "web") {
-            & $venvPython app.py --web
-        } else {
-            & $venvPython app.py --gui
-        }
+        & $venvPython app.py --gui
         Pop-Location
     }
 }

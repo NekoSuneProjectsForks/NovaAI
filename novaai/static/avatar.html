@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NovaAI Avatar Portal</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      color: #f5fbff;
+      background: #07131d;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      letter-spacing: 0.02em;
+    }
+    #status {
+      color: #64d2ff;
+      font-size: 0.95rem;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(420px, 1.35fr) 1fr;
+      gap: 18px;
+      padding: 18px;
+      flex: 1;
+    }
+    #viewer {
+      width: 100%;
+      min-height: 520px;
+      border-radius: 18px;
+      background: #06121b;
+      display: block;
+    }
+    .panel {
+      background: #0d1c2b;
+      border: 1px solid #17324a;
+      border-radius: 16px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .panel h2 {
+      margin: 0;
+      font-size: 1.1rem;
+      color: #d7e8ff;
+    }
+    .panel .text-muted {
+      color: #9bb1c7;
+      font-size: 0.95rem;
+      line-height: 1.4;
+    }
+    #dropZone {
+      min-height: 160px;
+      border: 2px dashed #64d2ff;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: #a8c8e8;
+      padding: 18px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+    #dropZone.dragover {
+      background: rgba(100, 210, 255, 0.12);
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      background: #1c3955;
+      color: #f5fbff;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    button:hover {
+      background: #275676;
+    }
+    #log {
+      min-height: 120px;
+      background: #06121b;
+      border: 1px solid #17324a;
+      border-radius: 12px;
+      padding: 12px;
+      overflow-y: auto;
+      max-height: 240px;
+      color: #d7e8ff;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+    .badge {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(100, 210, 255, 0.12);
+      color: #64d2ff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .side-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    @media (max-width: 960px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>NovaAI VRM Portal</h1>
+    <div id="status">Starting avatar bridge...</div>
+  </div>
+  <div>
+    <button id="refresh">Reload last avatar</button>
+  </div>
+</header>
+<main>
+  <section class="panel">
+    <div>
+      <h2>VRM Upload</h2>
+      <p class="text-muted">Drag and drop a .vrm model here or choose a file to upload it into NovaAI.</p>
+    </div>
+    <div id="dropZone">Drop VRM file here or click to select</div>
+    <input id="fileInput" type="file" accept=".vrm" hidden />
+    <div id="log"></div>
+  </section>
+  <section class="panel">
+    <div>
+      <h2>Avatar Viewer</h2>
+      <p class="text-muted">The avatar viewer connects to the local WebSocket bridge and renders the latest uploaded model.</p>
+    </div>
+    <canvas id="viewer"></canvas>
+    <div class="side-section">
+      <div class="badge" id="connectionBadge">Disconnected</div>
+      <div class="badge" id="modelBadge">No model loaded</div>
+      <div class="badge" id="expressionBadge">Expression: neutral</div>
+    </div>
+  </section>
+</main>
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+    }
+  }
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+
+  const statusEl = document.getElementById('status');
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const log = document.getElementById('log');
+  const connectionBadge = document.getElementById('connectionBadge');
+  const modelBadge = document.getElementById('modelBadge');
+  const expressionBadge = document.getElementById('expressionBadge');
+  const refreshButton = document.getElementById('refresh');
+
+  const canvas = document.getElementById('viewer');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 1000);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setClearColor(0x07131d, 1);
+  const light = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
+  scene.add(light);
+  const directional = new THREE.DirectionalLight(0xffffff, 0.7);
+  directional.position.set(1, 1, 1);
+  scene.add(directional);
+
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+
+  let currentVrm = null;
+  let ws = null;
+  let targetUrl = null;
+
+  function resize() {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (width === 0 || height === 0) return;
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  }
+
+  function logMessage(message) {
+    const item = document.createElement('div');
+    item.textContent = message;
+    log.prepend(item);
+  }
+
+  function setConnectionStatus(connected) {
+    connectionBadge.textContent = connected ? 'Connected' : 'Disconnected';
+    connectionBadge.style.background = connected ? 'rgba(123, 224, 180, 0.18)' : 'rgba(255, 142, 122, 0.18)';
+    connectionBadge.style.color = connected ? '#7be0b4' : '#ff8e7a';
+  }
+
+  function setModelStatus(text) {
+    modelBadge.textContent = text;
+  }
+
+  function setExpressionStatus(expression) {
+    const label = expression ? `Expression: ${expression}` : 'Expression: neutral';
+    expressionBadge.textContent = label;
+  }
+
+  function applyExpression(expression) {
+    if (!currentVrm || !currentVrm.blendShapeProxy) {
+      return;
+    }
+
+    const proxy = currentVrm.blendShapeProxy;
+    const presets = ['Neutral', 'Joy', 'Angry', 'Sorrow', 'Fun'];
+    presets.forEach((preset) => {
+      try {
+        proxy.setValue(preset, 0);
+      } catch (error) {
+        // Ignore missing blendshape presets.
+      }
+    });
+
+    const emotionPreset = {
+      happy: 'Joy',
+      joy: 'Joy',
+      sad: 'Sorrow',
+      angry: 'Angry',
+      anxious: 'Fun',
+      neutral: 'Neutral',
+    }[String(expression).toLowerCase()] || 'Neutral';
+
+    try {
+      proxy.setValue(emotionPreset, 1);
+      proxy.update();
+    } catch (error) {
+      // Some VRM files may not support blendshape expressions.
+    }
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+  }
+
+  function loadVrm(url) {
+    if (!url) {
+      setModelStatus('No model loaded');
+      return;
+    }
+    logMessage(`Loading VRM from ${url}`);
+    loader.load(
+      url,
+      (gltf) => {
+        const vrm = gltf.userData.vrm;
+        if (!vrm) {
+          logMessage('Loaded file did not contain a VRM.');
+          setModelStatus('Invalid VRM');
+          return;
+        }
+
+        if (currentVrm) {
+          scene.remove(currentVrm.scene);
+        }
+
+        currentVrm = vrm;
+        scene.add(vrm.scene);
+        vrm.scene.rotation.set(0, Math.PI, 0);
+        vrm.scene.position.set(0, -1.1, 0);
+        vrm.scene.scale.setScalar(1.4);
+        camera.position.set(0.0, 1.4, 2.6);
+        camera.lookAt(new THREE.Vector3(0, 1.0, 0));
+        setModelStatus(url.split('/').pop() || 'Loaded');
+        applyExpression(expressionBadge.textContent.replace('Expression: ', '').toLowerCase());
+      },
+      (progress) => {
+        if (progress.lengthComputable) {
+          logMessage(`Loading model... ${Math.round((progress.loaded / progress.total) * 100)}%`);
+        }
+      },
+      (error) => {
+        logMessage(`Failed to load VRM: ${error.message || error}`);
+        setModelStatus('Load failed');
+      }
+    );
+  }
+
+  function connectSocket() {
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${protocol}://${location.hostname}:8765`;
+    ws = new WebSocket(wsUrl);
+
+    ws.addEventListener('open', () => {
+      setConnectionStatus(true);
+      statusEl.textContent = 'Avatar bridge connected.';
+      logMessage('WebSocket connected');
+    });
+
+    ws.addEventListener('message', (event) => {
+      let payload;
+      try {
+        payload = JSON.parse(event.data);
+      } catch (error) {
+        logMessage('Invalid WS payload');
+        return;
+      }
+
+      if (payload.type === 'avatar' && payload.url) {
+        loadVrm(payload.url);
+        targetUrl = payload.url;
+      }
+
+      if (payload.type === 'state') {
+        const state = payload.payload || {};
+        setConnectionStatus(true);
+        const emotion = state.emotion || 'neutral';
+        statusEl.textContent = `Emotion: ${emotion}, danger: ${state.danger ? 'yes' : 'no'}`;
+        setExpressionStatus(emotion);
+        applyExpression(emotion);
+        logMessage(`State update: emotion=${emotion} danger=${state.danger ? 'yes' : 'no'}`);
+      }
+
+      if (payload.type === 'reminder') {
+        const reminder = payload.reminder;
+        setConnectionStatus(true);
+        logMessage(`Reminder: ${reminder.title} at ${reminder.due}`);
+      }
+
+      if (payload.type === 'hello') {
+        logMessage('Avatar bridge says hello.');
+      }
+    });
+
+    ws.addEventListener('close', () => {
+      setConnectionStatus(false);
+      statusEl.textContent = 'Avatar bridge disconnected. Reload to reconnect.';
+      logMessage('WebSocket disconnected');
+      setTimeout(connectSocket, 2000);
+    });
+
+    ws.addEventListener('error', () => {
+      setConnectionStatus(false);
+      statusEl.textContent = 'Unable to connect to the WebSocket bridge.';
+    });
+  }
+
+  async function uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    const response = await fetch('/upload', { method: 'POST', body: formData });
+    if (!response.ok) {
+      throw new Error(`Upload failed: ${response.status}`);
+    }
+    const body = await response.json();
+    return body.url;
+  }
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragenter', (event) => {
+    event.preventDefault();
+    dropZone.classList.add('dragover');
+  });
+  dropZone.addEventListener('dragover', (event) => {
+    event.preventDefault();
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    dropZone.classList.remove('dragover');
+    const file = event.dataTransfer.files[0];
+    if (!file) return;
+    try {
+      const url = await uploadFile(file);
+      logMessage(`Uploaded ${file.name}`);
+      loadVrm(url);
+    } catch (error) {
+      logMessage(error.message);
+    }
+  });
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    try {
+      const url = await uploadFile(file);
+      logMessage(`Uploaded ${file.name}`);
+      loadVrm(url);
+    } catch (error) {
+      logMessage(error.message);
+    }
+  });
+
+  refreshButton.addEventListener('click', () => {
+    if (targetUrl) {
+      loadVrm(targetUrl);
+    }
+  });
+
+  window.addEventListener('resize', resize);
+  resize();
+  animate();
+  connectSocket();
+</script>
+</body>
+</html>
